@@ -1,0 +1,23 @@
+{
+  "name": "podcast-agent-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "执行层·Runner：Pi Durable 集成薄封装（submit / resume / checkpoint）",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "node --test src/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-durable": "1.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}

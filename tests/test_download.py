@@ -1,4 +1,11 @@
-"""最小下载工具测试：本地 HTTP 源 + 合成静音 mp3。"""
+"""最小下载工具测试：本地 HTTP 源 + 合成静音 mp3。
+
+模拟场景：
+- 302 重定向跟随下载，产物描述字段完整（sha256 / size / duration）
+- 同内容重复下载：复用现有文件，无告警
+- 动态广告插入（hash 漂移）：告警并保留首版，临时文件清理
+- HTTP 4xx：明确抛 HTTPStatusError
+"""
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path

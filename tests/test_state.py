@@ -1,4 +1,12 @@
-"""state 层最小读写封装测试。"""
+"""state 层最小读写封装测试。
+
+模拟场景：
+- Episode 创建/查询、guid+feed 唯一约束、同 guid 不同 feed 可共存
+- 状态推进与非法状态被 CHECK 约束拒绝
+- 音频固化（sha256 + 时长写入）
+- 产物清单生命周期与删除 Episode 后的外键级联
+- 账本 intent→outcome 两段式、call_ref 重复拒绝、unknown 对账态、非法 outcome 拒绝
+"""
 import sqlite3
 
 import pytest

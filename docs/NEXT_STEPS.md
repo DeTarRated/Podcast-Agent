@@ -1,8 +1,8 @@
-# 下一步行动：垂直切片 kickoff 计划
+# 下一步行动：最小 MVP kickoff 计划
 
 - 日期：2026-11
-- 定位：垂直切片（最小 MVP）阶段的落地行动清单
-- 依据：`docs/IMPLEMENTATION_PLAN.md`「垂直切片」章节；执行层选型讨论见 `.agent/pi-durable-vs-langgraph.md`
+- 定位：最小 MVP 阶段的落地行动清单
+- 依据：`docs/IMPLEMENTATION_PLAN.md`「最小 MVP 」章节；执行层选型讨论见 `.agent/pi-durable-vs-langgraph.md`
 - 生成方式：父代理与 worker 子代理两轮迭代（草稿 → 审阅 → 修订）
 
 背景一句话：用一期真实节目打通「固化音频 → 词级转写 → 英文 SRT → 翻译与复核 → 本地待审核产物」，证明执行骨架（Pi Durable + 自研 Runner）与既有 translate-srt skill 能接通，为后续自动发现、审核与交付扫清执行层不确定性。
@@ -43,13 +43,13 @@
 
 ## 执行序列（按依赖排序）
 
-### 本地地基（零外部凭据，立即开始）
+### 本地代码（零外部凭据，立即开始）
 
 | 任务 | 做什么 | 产出文件 | 依赖前置 | 阻塞状态 |
 | --- | --- | --- | --- | --- |
 | 仓库初始化（git） | `git init` + 建 `.gitignore` + 首次 commit。忽略凭据文件（`.env`、`*.pem`、`*.key`、`secrets.*`）、单期工作区与音频/SRT 产物目录（本阶段约定为仓库根 `var/`）、`node_modules/`、`__pycache__/`、`.pytest_cache/`、`.venv/`、`.DS_Store`；依赖锁文件 `uv.lock`、`package-lock.json` 必须入库 | `.gitignore`、首次 commit | 无 | 立即 |
 | Python 环境与依赖定稿 | 定死 uv + `pyproject.toml` + `uv.lock` + Python 3.12，测试框架 pytest，HTTP 客户端 httpx，时长读取库 mutagen；依赖清单与锁文件进仓库，凭据不入库 | `pyproject.toml`、`uv.lock`；选型结论回填 `docs/TECH_STACK.md` 选型决策记录 | 仓库初始化 | 立即 |
-| 转写客户端选型 | 在 ElevenLabs 官方 SDK 与直接 HTTP 之间定稿，依据词级时间戳字段可获取性与维护成本选择；这是 `docs/TECH_STACK.md` 候选表中决策时机为垂直切片的待选项 | 选型结论回填 `docs/TECH_STACK.md` 选型决策记录；`pipeline/scribe.py` 按选型实现（在真实转写阶段） | Python 环境 | 立即（查文档即可，不需凭据） |
+| 转写客户端选型 | 在 ElevenLabs 官方 SDK 与直接 HTTP 之间定稿，依据词级时间戳字段可获取性与维护成本选择；这是 `docs/TECH_STACK.md` 候选表中决策时机为最小 MVP 的待选项 | 选型结论回填 `docs/TECH_STACK.md` 选型决策记录；`pipeline/scribe.py` 按选型实现（在真实转写阶段） | Python 环境 | 立即（查文档即可，不需凭据） |
 | 最小 Episode 持久化 | 建 SQLite schema：Episode（guid、feed、feed 快照、标题、发布时间、时长、enclosure、音频 hash、状态、产物清单引用）、产物清单、账本最小表；提供读写封装 | `state/schema.sql`、`state/episode.py`、`state/manifest.py`、`state/ledger.py`、`tests/test_state.py` | Python 环境 | 立即 |
 | 最小下载工具 | 跟随重定向下载 mp3，记录 sha256、大小、时长，落首次固化版本；后续步骤只读首版 | `pipeline/download.py`、`tests/test_download.py` | Python 环境 | 立即（本地 mock 音频即可验证） |
 | 词级重组新组件 | 把词级时间戳 JSON 重组为一句一条英文 SRT；说话人前缀默认输出 `[S01] ` 占位形态（skill 对 `名字: ` 与 `[S01] ` 两种形态都认）；保留词级时间戳供 provenance 溯源 | `pipeline/wordrender.py`、`tests/test_wordrender.py` | Python 环境 | 立即（合成词级 JSON 可测） |
@@ -60,7 +60,7 @@
 
 | 任务 | 做什么 | 产出文件 | 依赖前置 | 阻塞状态 |
 | --- | --- | --- | --- | --- | --- |
-| 单期 conversation 验证 | 验证每步 checkpoint、transcript 持久化、恢复入口、safe / unsafe 工具边界、effect sandwich、memo、parked | `runner/` 内实现；实验记录写入 `docs/verification/` | 本地地基 | 立即（用 mock 工具 + 固定响应） |
+| 单期 conversation 验证 | 验证每步 checkpoint、transcript 持久化、恢复入口、safe / unsafe 工具边界、effect sandwich、memo、parked | `runner/` 内实现；实验记录写入 `docs/verification/` | 本地代码 | 立即（用 mock 工具 + 固定响应） |
 | kill -9 崩溃恢复实验 | 构造崩溃点（转写 POST 在途、翻译中途、子代理完成回写前、checkpoint 切换）注入崩溃，观察 safe 重跑、unsafe 不重跑、结果未知进可对账状态 | 崩溃注入脚本；实验记录写入 `docs/verification/`；结论回填 `docs/ARCHITECTURE.md` 待验证事项 | 单期 conversation | 立即（mock 付费工具即可） |
 | 下载工具接入为 safe 工具 | 把 `pipeline/download.py` 封装为经 bash 调用的工具，落盘单期工作区与首版固化记录 | `runner/` 工具封装、单期工作区产物 | 下载工具 + Runner | 立即（本地起一个 http 源即可验证重定向与 hash） |
 
@@ -88,7 +88,7 @@
 | 任务 | 做什么 | 产出文件 | 依赖前置 | 阻塞状态 |
 | --- | --- | --- | --- | --- |
 | 真实费用与耗时基线 | 账本记录转写、翻译、复核、调研各次调用的金额估算、触发时间、所属期数；用真实用量对比需求典型成本 | `state/ledger.py` 记录、单期成本与耗时基线报告 | 真实转写 + 翻译复核 | 被真实调用阻塞 |
-| 垂直切片交接 | 回填 `docs/ARCHITECTURE.md` 待验证事项结论；产出交接记录（实现变更摘要、通过／未通过验收项、复现入口、样本与产物位置、费用、恢复说明、剩余阻塞） | `docs/ARCHITECTURE.md` 更新、垂直切片交接文档 | 全部前序 | 被前序阻塞 |
+| 最小 MVP 交接 | 回填 `docs/ARCHITECTURE.md` 待验证事项结论；产出交接记录（实现变更摘要、通过／未通过验收项、复现入口、样本与产物位置、费用、恢复说明、剩余阻塞） | `docs/ARCHITECTURE.md` 更新、最小 MVP 交接文档 | 全部前序 | 被前序阻塞 |
 
 ## 待确认开放问题
 
@@ -96,7 +96,7 @@
 
 | 问题 | 影响 | 推荐默认值 |
 | --- | --- | --- |
-| Scribe API key | 阻塞真实转写阶段的全部任务；本地地基与骨架接通不受影响 | 环境变量 `ELEVENLABS_API_KEY`；不入库、不写日志、不进 git |
+| Scribe API key | 阻塞真实转写阶段的全部任务；本地代码与骨架接通不受影响 | 环境变量 `ELEVENLABS_API_KEY`；不入库、不写日志、不进 git |
 | 模型凭据（翻译快模型、复核同档模型、调研快模型） | 阻塞翻译与复核阶段 | 环境变量；翻译与调研用快模型、复核用同档强模型，具体供应商与型号待凭据确认 |
 | 样本节目（一期真实 mp3 或 RSS 链接） | 阻塞真实转写与翻译复核；本地合成／固定响应测试不受阻 | 一期 Chelsea 相关比赛日节目，英文、多说话人、时长适中；未提供前先用合成词级 JSON 与已保存产物做可重复测试 |
 | 模型路由（具体供应商与型号） | 影响翻译、复核执行与成本基线 | 遵循 skill 约定：翻译可用快模型，复核与主代理同档；调研用快模型 |
@@ -114,7 +114,7 @@
 | 测试框架 | pytest |
 | HTTP 客户端（下载工具） | httpx |
 | 时长读取库 | mutagen |
-| 转写客户端 | ElevenLabs 官方 SDK 与直接 HTTP 二选一，在本地地基「转写客户端选型」任务定稿 |
+| 转写客户端 | ElevenLabs 官方 SDK 与直接 HTTP 二选一，在本地代码「转写客户端选型」任务定稿 |
 | Pi Durable 版本 | pin 小版本 1.5.0，Runner 接口隔离实验 API |
 | Node 运行时 | Node LTS |
 | 首期调研策略 | 跳过联网补缺调研（gaps 少时自拟译名），沉淀留到交付后，本阶段不演练沉淀 |
@@ -124,6 +124,7 @@
 - 以模块为单位提交：一个模块（如 state、pipeline/download、runner 骨架）的代码与测试全部通过后 commit 一次，commit message 注明模块与产出；不必每个任务一次。仓库初始化后先 commit 骨架，后续逐模块提交。
 - 完成记录去向：待验证项结论回填 `docs/ARCHITECTURE.md` 文末待验证事项；选型结论回填 `docs/TECH_STACK.md` 选型决策记录；实验与验证过程记录统一写入 `docs/verification/`。
 - 测试运行方式：Python 用 `uv run pytest tests/`；skill 脚本自检用 `python srt_tools.py --self-test` 与 `python kb_tools.py --self-test`；Node 用 `runner/package.json` 内约定的 test script。测试通过后再 commit。
+- 测试文件开头用几行注释列出本文件模拟的场景清单，便于人工核对覆盖范围。
 - 产物与凭据边界：凭据只走环境变量，不入库、不写日志；音频、单期工作区、原始 ASR 响应等产物进 `.gitignore` 的 `var/`，不进 git；依赖锁文件 `uv.lock` 与 `package-lock.json` 必须入库。
 - 推进方式：实施会话按执行序列顺序推进，不跳步；被开放问题阻塞的任务先跳过并在交接记录注明阻塞原因，不静默降级。
 

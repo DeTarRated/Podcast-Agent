@@ -1,6 +1,6 @@
 # 技术栈与工程设计
 
-> 定位：记录本项目的技术选型与工程设计细节。模块归属以 `ARCHITECTURE.md` 为准，需求以 `REQUIREMENTS.md` 为准，阶段安排与验证时机以 `IMPLEMENTATION_PLAN.md` 为准。本文不重议已定事项；带「草案」标记的内容待对应实施阶段定稿，带「待验证」标记的内容由垂直切片验证后回填。
+> 定位：记录本项目的技术选型与工程设计细节。模块归属以 `ARCHITECTURE.md` 为准，需求以 `REQUIREMENTS.md` 为准，阶段安排与验证时机以 `IMPLEMENTATION_PLAN.md` 为准。本文不重议已定事项；带「草案」标记的内容待对应实施阶段定稿，带「待验证」标记的内容由最小 MVP 验证后回填。
 
 ## 状态标记约定
 
@@ -8,7 +8,7 @@
 | --- | --- |
 | 已定 | REQUIREMENTS / ARCHITECTURE 等权威文档既定 |
 | 讨论结论 | `.agent/knowledge-base.md` 的讨论结论，需回填进需求数据模型 |
-| 待验证 | 垂直切片等阶段实验后才能定，当前不当作已具备能力 |
+| 待验证 | 最小 MVP 等阶段实验后才能定，当前不当作已具备能力 |
 | 草案 | 实施阶段定稿，当前仅作设计起点 |
 | 待选 | 有候选清单，按「决策时机」列在对应阶段完成选型 |
 
@@ -29,7 +29,7 @@
 
 ## 语言与运行时（草案）
 
-- Python：发现、流水线工具、Runner 周边脚本。版本与依赖管理在垂直切片定稿；依赖清单与锁文件进仓库，凭据不入库。
+- Python：发现、流水线工具、Runner 周边脚本。版本与依赖管理在最小 MVP 定稿；依赖清单与锁文件进仓库，凭据不入库。
 - Node：审批服务。版本与框架见「库与框架候选」。
 - 运行时约束：VPS 单机；无任务时除 cron 外无常驻进程，执行层按需唤醒、空闲退出。
 - 凭据与环境变量：Scribe API key、模型凭据、R2 密钥（最小权限）、分类 LLM 凭据，统一走环境变量或受限配置文件，日志与仓库不出现密钥。
@@ -39,14 +39,14 @@
 | 用途 | 候选 | 状态 | 决策时机 |
 | --- | --- | --- | --- |
 | RSS 解析与条件请求 | feedparser / 标准库解析 | 待选 | 自动化主链 |
-| HTTP 客户端（Lookup、下载） | requests / httpx | 待选 | 垂直切片（下载工具） |
-| 转写客户端 | ~~ElevenLabs 官方 SDK / 直接 HTTP~~ 已定：直接 HTTP（httpx） | 已定 | 已完成（垂直切片·本地地基） |
+| HTTP 客户端（Lookup、下载） | requests / httpx | 待选 | 最小 MVP（下载工具） |
+| 转写客户端 | ~~ElevenLabs 官方 SDK / 直接 HTTP~~ 已定：直接 HTTP（httpx） | 已定 | 已完成（最小 MVP·本地代码） |
 | 分类 LLM 客户端 | 按所选便宜模型供应商 SDK | 待选 | 自动化主链 |
 | Node 审批服务框架 | Express / Fastify | 待选 | 审核与交付 |
 | 审核页前端 | 静态 HTML + JS，原生或轻量框架 | 待选 | 审核与交付 |
 | SQLite 驱动 | Python stdlib sqlite3 / SQLAlchemy；Node 侧按所选框架配套 | 待选 | 自动化主链 |
-| 测试框架 | pytest / 内置 unittest | 待选 | 垂直切片 |
-| Python 依赖与虚拟环境 | uv / pip + venv | 待选 | 垂直切片 |
+| 测试框架 | pytest / 内置 unittest | 待选 | 最小 MVP |
+| Python 依赖与虚拟环境 | uv / pip + venv | 待选 | 最小 MVP |
 
 ## 存储与 schema（草案）
 
@@ -66,16 +66,22 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 
 ### 仓库目录
 
-- `docs/`：REQUIREMENTS、ARCHITECTURE、IMPLEMENTATION_PLAN、TECH_STACK（当前在根目录，迁入 docs/ 为草案目标）
-- `skills/`：translate-srt（当前在仓库内，保留现状或按引入方式调整）
-- `discover/`：feed 配置、轮询、分类、入队
-- `runner/`：Pi Durable 集成、checkpoint、工具封装
-- `pipeline/`：下载固化、词级重组、转写、翻译工作区编排（调用 translate-srt）
-- `review/`：静态审核页、审批服务、override
-- `delivery/`：看点页模板、R2 上传、签名 URL
-- `state/`：schema、迁移、查询入口
-- `eval/`：评测样本与指标脚本
-- `tests/`
+目录按 ARCHITECTURE 四层划分归属，层间只经数据契约与接口边界交互，不跨层直调：
+
+| 目录 | 所属分层 | 职责 |
+| --- | --- | --- |
+| `docs/` | — | 需求与设计文档 |
+| `skills/` | — | translate-srt（复用，不修改） |
+| `discover/` | 发现层（调度模块） | feed 配置、轮询、分类、入队 |
+| `runner/` | 执行层（Agent 执行模块） | Pi Durable 集成、Runner 接口、checkpoint、工具封装 |
+| `pipeline/` | 执行层（Agent 执行模块） | 下载固化、词级重组、转写、翻译工作区编排（调用 translate-srt） |
+| `state/` | 跨层数据契约（schema 归执行层维护） | schema、迁移、查询入口；Episode / 产物清单 / 账本 / override / 评测集 |
+| `review/` | 审核层（审核与评测模块） | 静态审核页、审批服务、override |
+| `eval/` | 审核层（审核与评测模块） | 评测样本与指标脚本 |
+| `delivery/` | 交付层（交付模块） | 看点页模板、R2 上传、签名 URL |
+| `tests/` | — | 各层模块测试 |
+
+层间边界（接口归属）：发现层 → 执行层 = Episode 记录与入队；执行层 ↔ 审核层 = 本地待审核产物目录 + 驳回原因与重跑范围；审核层 → 交付层 = 已批准版本；执行层 → 交付层 = approved 产物。发现层分类的付费调用经执行层维护的账本 schema 跨层写入。
 
 实际布局实施时按需调整，本表是设计起点。
 
@@ -88,13 +94,13 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 - 知识库为独立 git 仓库，不随本仓库公开提交。
 - 审核入口、续签入口等按需启动方式待目标 VPS 环境实测（打磨阶段部署验收）。
 
-## 待定项（垂直切片验证后回填）
+## 待定项（最小 MVP 验证后回填）
 
 - 子代理（翻译／复核）在 Pi Durable 中的接入方式：扩展任务 / 嵌套任务 / 独立 conversation。
 - fork / steer 在本项目的实际用法与禁用场景。
 - Durable 的 checkpoint、safe / unsafe、effect sandwich、memo、parked 实际行为，及 Runner 仍需补齐的边界。
 - Scribe 幂等键的服务端支持、作用域、有效期与异常窗口语义。
-- 本节各项在垂直切片验证完成后回填；其余机制性验证按阶段归属执行（如按需启动见部署拓扑）。
+- 本节各项在最小 MVP 验证完成后回填；其余机制性验证按阶段归属执行（如按需启动见部署拓扑）。
 
 ## 选型决策记录
 
