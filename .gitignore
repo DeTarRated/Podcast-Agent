@@ -1,0 +1,20 @@
+# 凭据
+.env
+*.pem
+*.key
+secrets.*
+
+# 工作区与媒体产物
+var/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Node
+node_modules/
+
+# 系统文件
+.DS_Store
