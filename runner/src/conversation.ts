@@ -1,12 +1,11 @@
-// 执行层·最小单期 conversation 骨架：流水线工具 + registry 组装
+// 执行层·最小单期 conversation 骨架：流水线工具（只依赖 ToolSpec，不依赖框架）
 //
 // pipeline.download 为真实工具（经 bash 调 pipeline/download.py）；
 // pipeline.transcribe 仍是占位（真实实现等 Scribe 凭据）。
 import { resolve } from "node:path";
 
-import { defineExtension, defineTool, type Registry, type ToolRegistration } from "@earendil-works/pi-durable";
-
 import { runCommand } from "./bash.ts";
+import type { ToolSpec } from "./tool-spec.ts";
 
 const REPO_ROOT = resolve(import.meta.dirname, "../..");
 
@@ -42,9 +41,9 @@ export async function runDownload(url: string, dest: string): Promise<DownloadIn
 }
 
 /** 流水线工具集：download 真实（safe）、transcribe 占位（unsafe，付费调用绝不自动重跑）。 */
-export function pipelineTools(): ToolRegistration[] {
+export function pipelineTools(): ToolSpec[] {
   return [
-    defineTool({
+    {
       name: "pipeline.download",
       description: "下载音频并 sha256 固化到工作区（重跑安全；同 hash 复用，hash 漂移保留首版）",
       parameters: {
@@ -61,16 +60,11 @@ export function pipelineTools(): ToolRegistration[] {
         const info = await runDownload(url, dest);
         const warning = info.warning ? `，warning=${info.warning}` : "";
         return {
-          output: [
-            {
-              type: "text",
-              text: `downloaded ${url} → ${dest}（sha256=${info.sha256}，size=${info.size}，duration=${info.duration_secs}s${warning}）`,
-            },
-          ],
+          text: `downloaded ${url} → ${dest}（sha256=${info.sha256}，size=${info.size}，duration=${info.duration_secs}s${warning}）`,
         };
       },
-    }),
-    defineTool({
+    },
+    {
       name: "pipeline.transcribe",
       description: "调用 ElevenLabs Scribe 转写（付费调用，unsafe：崩溃后绝不自动重跑）",
       parameters: {
@@ -84,14 +78,8 @@ export function pipelineTools(): ToolRegistration[] {
       // replay 省略 = unsafe
       async execute(args) {
         const { audio, idempotency_key } = args as { audio: string; idempotency_key: string };
-        return {
-          output: [{ type: "text", text: `transcribed ${audio} (key=${idempotency_key})` }],
-        };
+        return { text: `transcribed ${audio} (key=${idempotency_key})` };
       },
-    }),
+    },
   ];
-}
-
-export function installPipelineTools(registry: Registry): void {
-  registry.install(defineExtension({ name: "podcast-pipeline", tools: pipelineTools() }));
 }

@@ -2,7 +2,6 @@
 import type { Context } from "@earendil-works/chord";
 import {
   createRegistry,
-  defineExtension,
   Harness,
   LiveDoc,
   type Conversation,
@@ -11,10 +10,12 @@ import {
   type LiveState,
   type ModelRef,
   type SettledSubmissionRecord,
-  type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Models } from "@earendil-works/pi-ai";
+
+import { installTools } from "./durable-adapter.ts";
+import type { ToolSpec } from "./tool-spec.ts";
 
 export interface RunnerOpenOptions {
   /** SQLite 存储文件（单期一个 conversation，文件随单期走） */
@@ -23,7 +24,8 @@ export interface RunnerOpenOptions {
   models: Models;
   /** 主代理模型 */
   model: ModelRef;
-  tools?: readonly ToolRegistration[];
+  /** 工具（中立 ToolSpec 契约，不依赖框架类型） */
+  tools?: readonly ToolSpec[];
   /** 运行设置（如 restartLimit 熔断阈值） */
   settings?: Partial<HarnessSettings>;
 }
@@ -57,7 +59,7 @@ export class Runner {
     const storage = await openNodeSqliteStorage(options.dbPath);
     const registry = createRegistry();
     if (options.tools && options.tools.length > 0) {
-      registry.install(defineExtension({ name: "runner-tools", tools: [...options.tools] }));
+      installTools(registry, options.tools);
     }
     const harness = await Harness.open(
       storage,
