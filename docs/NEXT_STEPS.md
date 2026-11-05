@@ -121,7 +121,7 @@
 
 ## 执行约定
 
-- 每个任务完成后 `git commit` 一次，commit message 注明任务名与产出文件；仓库初始化后先 commit 骨架，后续逐任务提交。
+- 以模块为单位提交：一个模块（如 state、pipeline/download、runner 骨架）的代码与测试全部通过后 commit 一次，commit message 注明模块与产出；不必每个任务一次。仓库初始化后先 commit 骨架，后续逐模块提交。
 - 完成记录去向：待验证项结论回填 `docs/ARCHITECTURE.md` 文末待验证事项；选型结论回填 `docs/TECH_STACK.md` 选型决策记录；实验与验证过程记录统一写入 `docs/verification/`。
 - 测试运行方式：Python 用 `uv run pytest tests/`；skill 脚本自检用 `python srt_tools.py --self-test` 与 `python kb_tools.py --self-test`；Node 用 `runner/package.json` 内约定的 test script。测试通过后再 commit。
 - 产物与凭据边界：凭据只走环境变量，不入库、不写日志；音频、单期工作区、原始 ASR 响应等产物进 `.gitignore` 的 `var/`，不进 git；依赖锁文件 `uv.lock` 与 `package-lock.json` 必须入库。

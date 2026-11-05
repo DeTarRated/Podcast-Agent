@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "播客翻译 Agent"
 requires-python = ">=3.12"
 dependencies = [
-    "httpx",
+    "httpx[socks]",
     "mutagen",
 ]
 

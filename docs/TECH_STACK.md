@@ -40,7 +40,7 @@
 | --- | --- | --- | --- |
 | RSS 解析与条件请求 | feedparser / 标准库解析 | 待选 | 自动化主链 |
 | HTTP 客户端（Lookup、下载） | requests / httpx | 待选 | 垂直切片（下载工具） |
-| 转写客户端 | ElevenLabs 官方 SDK / 直接 HTTP | 待选 | 垂直切片 |
+| 转写客户端 | ~~ElevenLabs 官方 SDK / 直接 HTTP~~ 已定：直接 HTTP（httpx） | 已定 | 已完成（垂直切片·本地地基） |
 | 分类 LLM 客户端 | 按所选便宜模型供应商 SDK | 待选 | 自动化主链 |
 | Node 审批服务框架 | Express / Fastify | 待选 | 审核与交付 |
 | 审核页前端 | 静态 HTML + JS，原生或轻量框架 | 待选 | 审核与交付 |
@@ -102,6 +102,7 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 | --- | --- | --- | --- | --- |
 | 流程状态存储 | SQLite / 文本知识库 | 双存储分工 | 程序读写数据用 SQLite；知识库保持文本可读、可 git diff | 讨论结论（待回填需求） |
 | 词级重组组件 | 自研 / 复用上游 render 类脚本 | 待定 | 「项目侧新组件」为已定事实（计划已标注），自研 / 复用上游 render 脚本的选择属待验证 | 待验证 |
+| 转写客户端 | ElevenLabs 官方 SDK / 直接 HTTP | 直接 HTTP（httpx） | 本项目仅用 Scribe 一小面（POST /speech-to-text/convert + GET /transcripts/{id}），REST 与 SDK 均可获取 word 级时间戳与说话人分离；直接 HTTP 便于携带幂等键头做服务端语义验证、原始响应落盘、复用已定 httpx，避免大而全 SDK 的版本 churn 与无关升级牵连 | 已定 |
 | 其余待选库 | 见候选表 | 未定 | 分别在标注的决策时机完成 | 待选 |
 
 待选与待验证项在对应阶段决策后补录进本表，含结论与依据。
