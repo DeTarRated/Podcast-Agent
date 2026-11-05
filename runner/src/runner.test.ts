@@ -13,7 +13,7 @@ import { createModels, fauxAssistantMessage, fauxProvider, fauxText } from "@ear
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
 import { Runner } from "./runner.ts";
-import { placeholderTools } from "./conversation.ts";
+import { pipelineTools } from "./conversation.ts";
 
 function makeFaux() {
   const faux = fauxProvider({ provider: "mock", models: [{ id: "mock-main" }] });
@@ -34,7 +34,7 @@ test("打开→提交→完成；重开→checkpoint 可读→继续提交", asy
     dbPath,
     models,
     model: MODEL,
-    tools: placeholderTools(),
+    tools: pipelineTools(),
   });
   const first = await runner.submit(BACKGROUND_CONTEXT, "处理一期节目");
   assert.equal(first.status, "done");
@@ -47,7 +47,7 @@ test("打开→提交→完成；重开→checkpoint 可读→继续提交", asy
     dbPath,
     models,
     model: MODEL,
-    tools: placeholderTools(),
+    tools: pipelineTools(),
   });
   runner2.resume();
   const cp = await runner2.checkpoint(BACKGROUND_CONTEXT);

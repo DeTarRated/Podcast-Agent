@@ -98,3 +98,23 @@ def test_hash_mismatch_warns_and_keeps_first_version(http_source, tmp_path):
 def test_http_error_raises(http_source, tmp_path):
     with pytest.raises(httpx.HTTPStatusError):
         download.download(f"{http_source}/missing.mp3", tmp_path / "ep2.mp3", trust_env=False)
+
+
+def test_cli_end_to_end(http_source, tmp_path):
+    """CLI 入口：供执行层工具经 bash 调用，输出一行 JSON。"""
+    import json
+    import subprocess
+
+    dest = tmp_path / "cli.mp3"
+    proc = subprocess.run(
+        ["uv", "run", "python", "pipeline/download.py", f"{http_source}/feed.mp3", str(dest)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    info = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert info["sha256"] == download.sha256_file(dest)
+    assert info["size"] == len(silent_mp3(20))
+    assert info["warning"] is None
+    assert dest.exists()

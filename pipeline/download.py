@@ -66,3 +66,20 @@ def download(url: str, dest: Path, *, timeout: float = 120.0, trust_env: bool = 
 
     tmp.rename(dest)
     return _describe(dest, new_hash, warning=None)
+
+
+def main(argv=None) -> None:
+    """CLI 入口：供执行层工具经 bash 调用。输出一行 JSON 结果。"""
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description="下载并固化音频")
+    parser.add_argument("url")
+    parser.add_argument("dest")
+    args = parser.parse_args(argv)
+    result = download(args.url, Path(args.dest))
+    print(json.dumps(result, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

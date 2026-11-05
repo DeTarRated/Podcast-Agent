@@ -7,8 +7,10 @@ import {
   LiveDoc,
   type Conversation,
   type Harness as HarnessInstance,
+  type HarnessSettings,
   type LiveState,
   type ModelRef,
+  type SettledSubmissionRecord,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -22,6 +24,8 @@ export interface RunnerOpenOptions {
   /** 主代理模型 */
   model: ModelRef;
   tools?: readonly ToolRegistration[];
+  /** 运行设置（如 restartLimit 熔断阈值） */
+  settings?: Partial<HarnessSettings>;
 }
 
 export interface SubmitOutcome {
@@ -55,7 +59,11 @@ export class Runner {
     if (options.tools && options.tools.length > 0) {
       registry.install(defineExtension({ name: "runner-tools", tools: [...options.tools] }));
     }
-    const harness = await Harness.open(storage, { models: options.models, registry }, ctx);
+    const harness = await Harness.open(
+      storage,
+      { models: options.models, registry, settings: options.settings },
+      ctx,
+    );
     const root = await harness.root(ctx, { agent: { model: options.model } });
     return new Runner(harness, root, options.dbPath);
   }
@@ -70,6 +78,23 @@ export class Runner {
     this.resume();
     const submission = await this.root.submit({ type: "input", content }, ctx);
     const settled = await submission.wait(ctx);
+    return this.#outcome(settled);
+  }
+
+  /** 让一次未完成运行继续（不追加新消息）。 */
+  async continue(ctx: Context): Promise<SubmitOutcome> {
+    this.resume();
+    const submission = await this.root.submit({ type: "continue" }, ctx);
+    const settled = await submission.wait(ctx);
+    return this.#outcome(settled);
+  }
+
+  /** 等待对话普通作用域空闲（无在跑任务）。 */
+  async waitForIdle(ctx: Context): Promise<void> {
+    await this.root.waitForIdle(ctx);
+  }
+
+  #outcome(settled: SettledSubmissionRecord): SubmitOutcome {
     return {
       id: String(settled.id),
       status: settled.status,

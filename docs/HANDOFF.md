@@ -43,7 +43,7 @@
 | 词级重组 | `pipeline/wordrender.py` | Scribe 词级 JSON → 一句一条英文 SRT（`[S01] ` 前缀）+ provenance sidecar；时间戳缺失明确失败 | 10 | `uv run pytest tests/test_wordrender.py` |
 | Runner 薄封装 | `runner/src/runner.ts` | 隔离 Pi Durable 实验 API，暴露 submit / resume / checkpoint | 1 | `cd runner && npm test` |
 | 单期 conversation 骨架 | `runner/src/conversation.ts` | 占位工具（download 声明 safe、transcribe 默认 unsafe）+ registry 组装 | 2 | `cd runner && npm test` |
-| skill 复用自检 | `docs/verification/translate-srt-reuse.md` | 两脚本 `--self-test` 通过，复用方式定为「经 bash 调子命令，不 import 为库」 | — | `python skills/translate-srt/scripts/srt_tools.py --self-test`、`python skills/translate-srt/scripts/kb_tools.py --self-test` |
+| skill 复用自检 | `docs/verification/translate-srt-reuse.md` | 两脚本 `--self-test` 通过，复用方式定为「经 bash 调子命令，不 import 为库」 | — | `uv run python skills/translate-srt/scripts/srt_tools.py --self-test`、`uv run python skills/translate-srt/scripts/kb_tools.py --self-test` |
 | Python 环境 | `pyproject.toml`、`uv.lock` | uv + Python 3.12 + pytest + httpx + mutagen | — | `uv run pytest tests/` |
 
 - Python 测试合计：23 个全部通过（9 + 4 + 10）
@@ -153,4 +153,4 @@
 | Python 全部测试 | `uv run pytest tests/`（当前 23 个全过） |
 | Node 类型检查 | `cd runner && npm run typecheck`（当前通过） |
 | Node 全部测试 | `cd runner && npm test`（当前 3 个全过） |
-| skill 未误改回归 | `python skills/translate-srt/scripts/srt_tools.py --self-test`、`python skills/translate-srt/scripts/kb_tools.py --self-test` |
+| skill 未误改回归 | `uv run python skills/translate-srt/scripts/srt_tools.py --self-test`、`uv run python skills/translate-srt/scripts/kb_tools.py --self-test` |
