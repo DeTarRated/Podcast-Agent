@@ -40,7 +40,7 @@
 | --- | --- | --- | --- |
 | RSS 解析与条件请求 | feedparser / 标准库解析 | 待选 | 自动化主链 |
 | HTTP 客户端（Lookup、下载） | requests / httpx | 待选 | 最小 MVP（下载工具） |
-| 转写客户端 | ~~ElevenLabs 官方 SDK / 直接 HTTP~~ 已定：直接 HTTP（httpx） | 已定 | 已完成（最小 MVP·本地代码） |
+| 转写客户端 | ~~ElevenLabs 官方 SDK / 直接 HTTP~~ 已定：直接 HTTP（httpx） | 已定 | 已完成（最小 MVP·基础架构） |
 | 分类 LLM 客户端 | 按所选便宜模型供应商 SDK | 待选 | 自动化主链 |
 | Node 审批服务框架 | Express / Fastify | 待选 | 审核与交付 |
 | 审核页前端 | 静态 HTML + JS，原生或轻量框架 | 待选 | 审核与交付 |

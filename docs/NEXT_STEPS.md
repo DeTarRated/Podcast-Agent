@@ -43,7 +43,7 @@
 
 ## 执行序列（按依赖排序）
 
-### 本地代码（零外部凭据，立即开始）
+### 基础架构（零外部凭据，立即开始）
 
 | 任务 | 做什么 | 产出文件 | 依赖前置 | 阻塞状态 |
 | --- | --- | --- | --- | --- |
@@ -56,11 +56,11 @@
 | translate-srt 复用边界自检 | 跑 `srt_tools.py --self-test` 与 `kb_tools.py --self-test`；确认从仓库内调用脚本的路径约定与输入输出边界，不修改 skill | 复用边界说明写入 `docs/verification/` 验证记录 | 无 | 立即 |
 | Pi Durable 安装与 Runner 薄封装 | 先做 Node LTS 环境检查；npm 安装并 pin 小版本 1.5.0；建 Runner 接口（submit / resume / checkpoint）隔离实验 API；建最小单期 conversation 骨架 | `runner/package.json` + `package-lock.json`、`runner/src/runner.ts`、`runner/src/conversation.ts`、mock 对话测试 | 仓库初始化 | 立即 |
 
-### 骨架接通（Pi Durable 能力验证）
+### 流程测试（Pi Durable 能力验证）
 
 | 任务 | 做什么 | 产出文件 | 依赖前置 | 阻塞状态 |
 | --- | --- | --- | --- | --- | --- |
-| 单期 conversation 验证 | 验证每步 checkpoint、transcript 持久化、恢复入口、safe / unsafe 工具边界、effect sandwich、memo、parked | `runner/` 内实现；实验记录写入 `docs/verification/` | 本地代码 | 立即（用 mock 工具 + 固定响应） |
+| 单期 conversation 验证 | 验证每步 checkpoint、transcript 持久化、恢复入口、safe / unsafe 工具边界、effect sandwich、memo、parked | `runner/` 内实现；实验记录写入 `docs/verification/` | 基础架构 | 立即（用 mock 工具 + 固定响应） |
 | kill -9 崩溃恢复实验 | 构造崩溃点（转写 POST 在途、翻译中途、子代理完成回写前、checkpoint 切换）注入崩溃，观察 safe 重跑、unsafe 不重跑、结果未知进可对账状态 | 崩溃注入脚本；实验记录写入 `docs/verification/`；结论回填 `docs/ARCHITECTURE.md` 待验证事项 | 单期 conversation | 立即（mock 付费工具即可） |
 | 下载工具接入为 safe 工具 | 把 `pipeline/download.py` 封装为经 bash 调用的工具，落盘单期工作区与首版固化记录 | `runner/` 工具封装、单期工作区产物 | 下载工具 + Runner | 立即（本地起一个 http 源即可验证重定向与 hash） |
 
@@ -79,7 +79,7 @@
 | --- | --- | --- | --- | --- |
 | 最小英超知识库 init | 用 `kb_tools.py init` 建空库或最小英超底座；`kb_tools.py status` 通过 | 独立 git 知识库（位置由 `TRANSLATE_SRT_HOME` 或 config 决定） | 知识库位置 | 可用默认位置先做 |
 | skill 全流程编排 | 编排输入体检、工作区初始化、命中与缺口、简报与术语表、转录修正、翻译、复核、重切分、provenance；merge / split 只在 stats 判定需要时运行 | `pipeline/orchestrate.py`、单期工作区全套产物 | 英文 SRT、知识库 | 被模型凭据与样本节目阻塞 |
-| 子代理接入方式实验 | 实验扩展任务、嵌套任务或独立 conversation 中适合本项目的方式；记录模型路由、产物位置、父子完成关联、崩溃恢复、结果去重、成本归属 | 实验记录；结论回填 `docs/ARCHITECTURE.md` 待验证事项 | 骨架接通 | 被模型凭据阻塞 |
+| 子代理接入方式实验 | 实验扩展任务、嵌套任务或独立 conversation 中适合本项目的方式；记录模型路由、产物位置、父子完成关联、崩溃恢复、结果去重、成本归属 | 实验记录；结论回填 `docs/ARCHITECTURE.md` 待验证事项 | 流程测试 | 被模型凭据阻塞 |
 | 翻译与复核执行 | 快模型翻译、同档模型复核；保留复核说明、别名替换日志、检查结果；复核修改异常少时主代理补查 | 翻译稿、复核稿、`review_notes.md`、`alias_log.tsv`、check 记录 | 子代理接入方式 | 被模型凭据与样本节目阻塞 |
 | 产出候选与 provenance | 产出复核版与重切分版候选，跑 provenance 统计原始／插值时间点；状态推进到 reviewing，不上传、不标记交付 | 复核版、重切分版候选、provenance 统计、本地待审核状态 | 翻译与复核执行 | 被模型凭据与样本节目阻塞 |
 
@@ -96,7 +96,7 @@
 
 | 问题 | 影响 | 推荐默认值 |
 | --- | --- | --- |
-| Scribe API key | 阻塞真实转写阶段的全部任务；本地代码与骨架接通不受影响 | 环境变量 `ELEVENLABS_API_KEY`；不入库、不写日志、不进 git |
+| Scribe API key | 阻塞真实转写阶段的全部任务；基础架构与流程测试不受影响 | 环境变量 `ELEVENLABS_API_KEY`；不入库、不写日志、不进 git |
 | 模型凭据（翻译快模型、复核同档模型、调研快模型） | 阻塞翻译与复核阶段 | 环境变量；翻译与调研用快模型、复核用同档强模型，具体供应商与型号待凭据确认 |
 | 样本节目（一期真实 mp3 或 RSS 链接） | 阻塞真实转写与翻译复核；本地合成／固定响应测试不受阻 | 一期 Chelsea 相关比赛日节目，英文、多说话人、时长适中；未提供前先用合成词级 JSON 与已保存产物做可重复测试 |
 | 模型路由（具体供应商与型号） | 影响翻译、复核执行与成本基线 | 遵循 skill 约定：翻译可用快模型，复核与主代理同档；调研用快模型 |
@@ -114,7 +114,7 @@
 | 测试框架 | pytest |
 | HTTP 客户端（下载工具） | httpx |
 | 时长读取库 | mutagen |
-| 转写客户端 | ElevenLabs 官方 SDK 与直接 HTTP 二选一，在本地代码「转写客户端选型」任务定稿 |
+| 转写客户端 | ElevenLabs 官方 SDK 与直接 HTTP 二选一，在基础架构「转写客户端选型」任务定稿 |
 | Pi Durable 版本 | pin 小版本 1.5.0，Runner 接口隔离实验 API |
 | Node 运行时 | Node LTS |
 | 首期调研策略 | 跳过联网补缺调研（gaps 少时自拟译名），沉淀留到交付后，本阶段不演练沉淀 |
