@@ -68,20 +68,20 @@
 
 | 任务 | 做什么 | 产出文件 | 依赖前置 | 阻塞状态 |
 | --- | --- | --- | --- | --- |
-| Scribe 客户端接通 | 接通 Scribe v2 说话人分离与词级时间戳；原始响应落盘到每期工作区且不覆盖 | `pipeline/scribe.py`、每期工作区原始响应文件 | 转写客户端选型、Scribe API key、样本节目 | 被 Scribe 凭据与样本节目阻塞 |
+| Scribe 客户端接通 | 接通 Scribe v2 说话人分离与词级时间戳；原始响应落盘到每期工作区且不覆盖 | `pipeline/scribe.py`、每期工作区原始响应文件 | 转写客户端选型、Scribe API key、样本节目 | 前置均已就绪；scribe.py 实现正在另一会话讨论 |
 | Scribe 幂等键服务端语义查证 | 查官方文档并做受控验证：请求键支持、作用域、有效期、超时后查询或对账手段、计费语义 | 查证与受控验证记录；结论回填 `docs/TECH_STACK.md` 待验证项 | Scribe API key | 被 Scribe 凭据阻塞 |
-| 词级重组接真实响应 | 用真实 Scribe 词级 JSON 跑通重组，输出 `[S01] ` 占位前缀；处理缺失词时间戳、未知说话人、异常时间区间，无法生成可信输入时明确失败或等待，不伪造时间点 | `pipeline/wordrender.py` 异常路径 + 对应测试 | 真实转写 | 被 Scribe 凭据与样本节目阻塞 |
-| 英文 SRT 输入体检 | 对重组产物跑 `srt_tools.py stats` 体检，判定 merge / split 是否需要；记录说话人前缀形态 | 英文 SRT（一句一条 + `[S01] ` 占位前缀）、体检记录、产物清单与账本写入 | 词级重组接真实响应 | 被 Scribe 凭据与样本节目阻塞 |
+| 词级重组接真实响应 | 用真实 Scribe 词级 JSON 跑通重组，输出 `[S01] ` 占位前缀；处理缺失词时间戳、未知说话人、异常时间区间，无法生成可信输入时明确失败或等待，不伪造时间点 | `pipeline/wordrender.py` 异常路径 + 对应测试 | 真实转写 | 依赖真实转写产物 |
+| 英文 SRT 输入体检 | 对重组产物跑 `srt_tools.py stats` 体检，判定 merge / split 是否需要；记录说话人前缀形态 | 英文 SRT（一句一条 + `[S01] ` 占位前缀）、体检记录、产物清单与账本写入 | 词级重组接真实响应 | 依赖真实转写产物 |
 
 ### 翻译与复核接通（translate-srt）
 
 | 任务 | 做什么 | 产出文件 | 依赖前置 | 阻塞状态 |
 | --- | --- | --- | --- | --- |
 | 最小英超知识库 init | 用 `kb_tools.py init` 建空库或最小英超底座；`kb_tools.py status` 通过 | 独立 git 知识库（位置由 `TRANSLATE_SRT_HOME` 或 config 决定） | 知识库位置 | 可用默认位置先做 |
-| skill 全流程编排 | 编排输入体检、工作区初始化、命中与缺口、简报与术语表、转录修正、翻译、复核、重切分、provenance；merge / split 只在 stats 判定需要时运行 | `pipeline/orchestrate.py`、单期工作区全套产物 | 英文 SRT、知识库 | 被模型凭据与样本节目阻塞 |
-| 子代理接入方式实验 | 实验扩展任务、嵌套任务或独立 conversation 中适合本项目的方式；记录模型路由、产物位置、父子完成关联、崩溃恢复、结果去重、成本归属 | 实验记录；结论回填 `docs/ARCHITECTURE.md` 待验证事项 | 流程测试 | 被模型凭据阻塞 |
-| 翻译与复核执行 | 快模型翻译、同档模型复核；保留复核说明、别名替换日志、检查结果；复核修改异常少时主代理补查 | 翻译稿、复核稿、`review_notes.md`、`alias_log.tsv`、check 记录 | 子代理接入方式 | 被模型凭据与样本节目阻塞 |
-| 产出候选与 provenance | 产出复核版与重切分版候选，跑 provenance 统计原始／插值时间点；状态推进到 reviewing，不上传、不标记交付 | 复核版、重切分版候选、provenance 统计、本地待审核状态 | 翻译与复核执行 | 被模型凭据与样本节目阻塞 |
+| skill 全流程编排 | 编排输入体检、工作区初始化、命中与缺口、简报与术语表、转录修正、翻译、复核、重切分、provenance；merge / split 只在 stats 判定需要时运行 | `pipeline/orchestrate.py`、单期工作区全套产物 | 英文 SRT、知识库 | 前置凭据与样本均已就绪，依赖上游产物 |
+| 子代理接入方式实验 | 实验扩展任务、嵌套任务或独立 conversation 中适合本项目的方式；记录模型路由、产物位置、父子完成关联、崩溃恢复、结果去重、成本归属 | 实验记录；结论回填 `docs/ARCHITECTURE.md` 待验证事项 | 流程测试 | 模型凭据已就绪（DeepSeek），可开工 |
+| 翻译与复核执行 | 快模型翻译、同档模型复核；保留复核说明、别名替换日志、检查结果；复核修改异常少时主代理补查 | 翻译稿、复核稿、`review_notes.md`、`alias_log.tsv`、check 记录 | 子代理接入方式 | 凭据已就绪，依赖上游产物 |
+| 产出候选与 provenance | 产出复核版与重切分版候选，跑 provenance 统计原始／插值时间点；状态推进到 reviewing，不上传、不标记交付 | 复核版、重切分版候选、provenance 统计、本地待审核状态 | 翻译与复核执行 | 凭据已就绪，依赖上游产物 |
 
 ### 收口与回填
 
@@ -97,9 +97,9 @@
 | 问题 | 影响 | 推荐默认值 |
 | --- | --- | --- |
 | Scribe API key | 阻塞真实转写阶段的全部任务；基础架构与流程测试不受影响 | 环境变量 `ELEVENLABS_API_KEY`；不入库、不写日志、不进 git |
-| 模型凭据（翻译快模型、复核同档模型、调研快模型） | 阻塞翻译与复核阶段 | 环境变量；翻译与调研用快模型、复核用同档强模型，具体供应商与型号待凭据确认 |
-| 样本节目（一期真实 mp3 或 RSS 链接） | 阻塞真实转写与翻译复核；本地合成／固定响应测试不受阻 | 一期 Chelsea 相关比赛日节目，英文、多说话人、时长适中；未提供前先用合成词级 JSON 与已保存产物做可重复测试 |
-| 模型路由（具体供应商与型号） | 影响翻译、复核执行与成本基线 | 遵循 skill 约定：翻译可用快模型，复核与主代理同档；调研用快模型 |
+| 模型凭据（翻译快模型、复核同档模型、调研快模型） | ~~阻塞翻译与复核阶段~~ 已解决（2026-11-06）：`.env` 中 `DEEPSEEK_API_KEY` 已填并实测可用 | DeepSeek 先行；翻译 `deepseek-flash`、复核 `deepseek-v4-pro`、调研 `deepseek-flash`；换 provider 只改 `.env` 路由行 + 对应 key |
+| 样本节目（一期真实 mp3 或 RSS 链接） | 已选定（2026-11-06）：《Boss with Jamie Carragher: Xabi Alonso》，Sky Sports PL Podcast，2026-10-26，37:29，36MB，卡拉格专访切尔西主帅阿隆索 | enclosure `https://episodes.captivate.fm/episode/8db0bde6-c9cb-43be-92ab-b18987fbdc58.mp3`（feed `https://feeds.captivate.fm/sky-sports-premierleague/`，已实测 200）；转写成本预估 ≈$0.14（37.5min × $0.22/h）；双人访谈形态，与比赛日多人圆桌的形态差异仅影响发现层分类样本，不影响下游测试 |
+| 模型路由（具体供应商与型号） | 影响翻译、复核执行与成本基线 | 已定（2026-11-06）：`.env` 路由变量 `PODCAST_MODEL_TRANSLATE/REVIEW/RESEARCH` = `deepseek/deepseek-flash`、`deepseek/deepseek-v4-pro`、`deepseek/deepseek-flash`；均为推理模型，`effort` 支持 low/high/max（默认 high），批量任务建议 low，接线时定 |
 | 项目命名（Python 包名、Node 项目名、SQLite 文件名） | 三者连锁：import 路径、DB 文件名、`package.json` name、目录名相互引用，改名是全局动作 | 默认按 `podcast_agent` 开工；用户定名后一次性全局重命名，成本边界见下 |
 | 知识库位置（`TRANSLATE_SRT_HOME` 或 config） | 阻塞 match / glossary 与全流程编排（但可用默认位置先建空库） | 独立 git 仓 + 环境变量 `TRANSLATE_SRT_HOME` 指向；迁移方式 = 改环境变量，不复制产物、不改 git 历史；缺库先 `kb_tools.py init`；不入本项目仓库 |
 | 样本节目说话人身份 | 影响词级重组前缀处理、术语表、翻译人称 | 词级重组默认输出 `[S01] ` 占位形态；真名在 skill 的 speakers 步骤用 `speakers --map` 落实；匿名素材按 pitfalls 给处置选项（全部 `--drop` / 换成角色名 / 只给非旁白加角色名），不臆造真名 |
@@ -161,4 +161,4 @@
 - 用 mock 工具 + 固定响应做单期 conversation 验证与 kill -9 崩溃实验，实验记录写入 `docs/verification/`，结论回填 Durable 能力边界。
 - 用默认位置 `kb_tools.py init` 建空知识库（用户确认位置后改 `TRANSLATE_SRT_HOME` 环境变量迁移，不复制产物、不改 git 历史）。
 
-被开放问题阻塞、暂不能开始的步骤：真实转写（Scribe 凭据 + 样本节目）、翻译与复核（模型凭据 + 知识库位置 + 样本节目）、费用与耗时基线及交接（依赖真实调用）；项目命名未定前按 `podcast_agent` 默认开工，用户定名后一次性全局重命名。
+被开放问题阻塞、暂不能开始的步骤：真实转写与翻译复核的外部前置（Scribe key、计费口径、模型凭据、样本节目）已全部就绪；scribe.py 实现正在另一会话讨论，词级重组接真实响应、翻译与复核依赖其产物。知识库沉淀留待交付后演练；项目命名未定前按 `podcast_agent` 默认开工，用户定名后一次性全局重命名。

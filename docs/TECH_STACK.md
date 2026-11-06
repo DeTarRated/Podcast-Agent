@@ -99,7 +99,7 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 - 子代理（翻译／复核）在 Pi Durable 中的接入方式：扩展任务 / 嵌套任务 / 独立 conversation。
 - fork / steer 在本项目的实际用法与禁用场景。
 - Durable 的 checkpoint、safe / unsafe、effect sandwich、memo、parked 实际行为，及 Runner 仍需补齐的边界。
-- Scribe 幂等键的服务端支持、作用域、有效期与异常窗口语义。
+- Scribe 幂等键的服务端支持、作用域、有效期与异常窗口语义：已查证（2026-11，文档 + 受控实测）——官方文档无幂等键机制（llms-full.txt 零命中）；实测同音频同自定义键重发两次产生两个不同 `transcription_id`，即无去重；对账手段为服务端 `transcription_id` + `GET /v1/speech-to-text/transcripts/{id}`（实测可用），旧路径 `/v1/speech-to-text/convert` 已 404；计费按发送音频时长秒级计量、无去重声明。证据与影响见 `docs/verification/scribe-idempotency-doc-review.md` 与 `docs/verification/scribe-idempotency-controlled-test.md`。
 - 本节各项在最小 MVP 验证完成后回填；其余机制性验证按阶段归属执行（如按需启动见部署拓扑）。
 
 ## 选型决策记录
@@ -108,7 +108,7 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 | --- | --- | --- | --- | --- |
 | 流程状态存储 | SQLite / 文本知识库 | 双存储分工 | 程序读写数据用 SQLite；知识库保持文本可读、可 git diff | 讨论结论（待回填需求） |
 | 词级重组组件 | 自研 / 复用上游 render 类脚本 | 待定 | 「项目侧新组件」为已定事实（计划已标注），自研 / 复用上游 render 脚本的选择属待验证 | 待验证 |
-| 转写客户端 | ElevenLabs 官方 SDK / 直接 HTTP | 直接 HTTP（httpx） | 本项目仅用 Scribe 一小面（POST /speech-to-text/convert + GET /transcripts/{id}），REST 与 SDK 均可获取 word 级时间戳与说话人分离；直接 HTTP 便于携带幂等键头做服务端语义验证、原始响应落盘、复用已定 httpx，避免大而全 SDK 的版本 churn 与无关升级牵连 | 已定 |
+| 转写客户端 | ElevenLabs 官方 SDK / 直接 HTTP | 直接 HTTP（httpx） | 本项目仅用 Scribe 一小面（现行文档端点 `POST /v1/speech-to-text` + `GET /v1/speech-to-text/transcripts/{id}`，见幂等键查证；无幂等键可用），REST 与 SDK 均可获取 word 级时间戳与说话人分离；直接 HTTP 便于原始响应落盘、复用已定 httpx，避免大而全 SDK 的版本 churn 与无关升级牵连 | 已定 |
 | 其余待选库 | 见候选表 | 未定 | 分别在标注的决策时机完成 | 待选 |
 
 待选与待验证项在对应阶段决策后补录进本表，含结论与依据。

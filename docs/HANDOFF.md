@@ -1,156 +1,176 @@
 # 交接文档 — 播客翻译 Agent
 
 - 日期：2026-11
-- 定位：给下一个新会话的接手说明，覆盖「读什么、现状到哪、已定什么、待确认什么、下一步做什么、怎么自检」
-- 生成方式：父代理与 worker 子代理两轮迭代（草稿 → 审阅 → 修订），父代理定稿
+- 定位：给下一个新会话的接手说明，覆盖「读什么、现状到哪、已定什么、待确认什么、本会话已完成什么、需要用户配合什么、怎么自检」
+- 生成方式：父代理与 worker 子代理迭代（草稿 → 审阅 → 修订），父代理定稿
 
 ## 与既有交接文档的关系
 
 - 本文档是实施现状交接，新会话以本文档为准。
 
-## 阅读顺序（先读→后读）
+## 阅读顺序
 
-- 先读 `AGENTS.md`：项目沟通规则（禁用编号风格、文档管理规则、测试规范）
+- 先读 `AGENTS.md`：项目沟通规则（禁用编号风格、文档管理规则、测试规范、Git 规范）
 - 再读 `docs/REQUIREMENTS.md`：需求与数据模型（权威文档，已定事项不重议）
 - 然后读 `docs/ARCHITECTURE.md`：四层模块职责划分与文末「待验证事项」
 - 再读 `docs/IMPLEMENTATION_PLAN.md`：阶段划分、任务依赖、产出与验收口径
-- 再读 `docs/TECH_STACK.md`：技术选型、schema 草案、目录拓扑、选型决策记录
+- 再读 `docs/TECH_STACK.md`：技术选型、schema 草案、目录拓扑、选型决策记录、待验证项
 - 再读 `docs/NEXT_STEPS.md`：最小 MVP 的落地行动清单（当前推进所依据的清单）
 - 再读 `.agent/pi-durable-vs-langgraph.md`：执行层骨架选型讨论与风险
 - 再读 `.agent/knowledge-base.md`：知识库讨论结论（含未定字段级 gap）
+- 再读 `docs/verification/flow-test.md`：Pi Durable 语义验证与 kill -9 崩溃恢复实验结论
 - 再读 `docs/verification/translate-srt-reuse.md`：skill 复用边界自检结论
 - 最后读代码：`state/` → `pipeline/` → `runner/src/` → `tests/`（顺序即数据契约→流水线工具→执行骨架→测试）
 
 ## 项目现状
 
-### 四层架构（一句话）
+### 阶段进度
 
-发现层（cron 调度入队）→ 执行层（Agent 决策 + 工具循环 + 每步 checkpoint）→ 审核层（人工闸门 + override）→ 交付层（私有签名链接交付）；数据流为「发现层入队 → 执行层加工到待审核 → 审核层人工闸门 → 交付层私有链接」。
+- 外层五大阶段：最小 MVP → 自动化主链 → 审核与交付 → 长程与沉淀 → 打磨
+- 最小 MVP 内部五阶段：基础架构 ✅ / 流程测试 ✅ / 真实转写 / 翻译与复核 / 收口与回填
+- 当前进度：基础架构、流程测试、ToolSpec 隔离层已完成并提交；真实转写的准备项已全部就绪——Scribe 幂等键查证（服务端无幂等键）、计费口径结案（PAYG $0.22/h）、模型路由定为 DeepSeek（flash 翻译/调研 + v4-pro 复核，已实测）、样本节目已选定、最小英超知识库 init。下一步进入「真实转写」本体：`pipeline/scribe.py` 实现正在另一会话讨论，本仓暂无未决外部阻塞。
 
-### 阶段术语
-
-- 外层五大阶段（权威划分）：最小 MVP → 自动化主链 → 审核与交付 → 长程与沉淀 → 打磨
-- 最小 MVP 内部五阶段（`docs/NEXT_STEPS.md` 执行序列）：基础架构 ✅ / 流程测试 / 真实转写 / 翻译与复核 / 收口与回填
-
-当前进度：基础架构已完成；流程测试即将开始，尚未开展。
-
-## 已完成内容（基础架构阶段，逐模块）
+### 已完成内容（逐模块）
 
 | 模块 | 文件 | 职责 | 测试数 | 运行命令 |
 | --- | --- | --- | --- | --- |
-| 状态存储 | `state/schema.sql`、`state/db.py`、`state/episode.py`、`state/manifest.py`、`state/ledger.py` | SQLite 三表（episode / artifact / ledger）+ WAL/外键/幂等建表；Episode 创建与状态推进；产物清单；intent→outcome 两段式账本 | 9 | `uv run pytest tests/test_state.py` |
-| 下载固化 | `pipeline/download.py` | 跟随 302 下载、sha256 固化、时长读取、首版保护（hash 漂移告警） | 4 | `uv run pytest tests/test_download.py` |
+| 状态存储 | `state/schema.sql`、`state/db.py`、`state/episode.py`、`state/manifest.py`、`state/ledger.py` | SQLite 三表（episode / artifact / ledger）+ WAL/外键/幂等建表；Episode 创建与状态推进；产物清单；intent→outcome 两段式账本（call_ref 唯一，unknown 态供对账不自动重跑） | 9 | `uv run pytest tests/test_state.py` |
+| 下载固化 | `pipeline/download.py` | 跟随 302 下载、sha256 固化、时长读取、首版保护（hash 漂移告警）；含 CLI 端到端 | 5 | `uv run pytest tests/test_download.py` |
 | 词级重组 | `pipeline/wordrender.py` | Scribe 词级 JSON → 一句一条英文 SRT（`[S01] ` 前缀）+ provenance sidecar；时间戳缺失明确失败 | 10 | `uv run pytest tests/test_wordrender.py` |
-| Runner 薄封装 | `runner/src/runner.ts` | 隔离 Pi Durable 实验 API，暴露 submit / resume / checkpoint | 1 | `cd runner && npm test` |
-| 单期 conversation 骨架 | `runner/src/conversation.ts` | 占位工具（download 声明 safe、transcribe 默认 unsafe）+ registry 组装 | 2 | `cd runner && npm test` |
-| skill 复用自检 | `docs/verification/translate-srt-reuse.md` | 两脚本 `--self-test` 通过，复用方式定为「经 bash 调子命令，不 import 为库」 | — | `uv run python skills/translate-srt/scripts/srt_tools.py --self-test`、`uv run python skills/translate-srt/scripts/kb_tools.py --self-test` |
+| Runner 薄封装 | `runner/src/runner.ts` | 隔离 Pi Durable 实验 API，暴露 submit / resume / continue / checkpoint | 1 | `cd runner && npm test` |
+| ToolSpec 工具契约 | `runner/src/tool-spec.ts` | 工具中立契约（`ToolSpec`）：replay safe/unsafe、execute、extras.memo，业务工具只依赖它 | — | — |
+| pi-durable 适配层 | `runner/src/durable-adapter.ts` | ToolSpec → ToolRegistration 转换；换框架时只重写本文件与 runner.ts | — | — |
+| 单期 conversation | `runner/src/conversation.ts` | download 真实（safe）、transcribe 占位（unsafe）的流水线工具集 | 3 | `cd runner && npm test` |
+| 流程测试 | `runner/src/semantics.test.ts`、`runner/src/kill9.test.ts`、`runner/src/crash-child.ts` | 进程内语义验证 + kill -9 四崩溃点恢复实验 | 6 | `cd runner && npm test` |
+| skill 复用自检 | `docs/verification/translate-srt-reuse.md` | 两脚本 `--self-test` 通过，复用方式定为「经 bash 调子命令，不 import 为库」 | — | 见常用命令 |
 | Python 环境 | `pyproject.toml`、`uv.lock` | uv + Python 3.12 + pytest + httpx + mutagen | — | `uv run pytest tests/` |
 
-- Python 测试合计：23 个全部通过（9 + 4 + 10）
-- Node 测试合计：3 个全部通过（1 + 2）
-- 待建文件（基础架构已列出但未实现）：`pipeline/scribe.py`（Scribe 客户端，选型已定）、`pipeline/orchestrate.py`（translate-srt 全流程编排）
+- Python 测试合计：24 个全部通过（9 + 5 + 10）
+- Node 测试合计：10 个全部通过（runner 1 + conversation 3 + semantics 2 + kill9 4）
+- 待建文件（已列出但未实现）：`pipeline/scribe.py`（Scribe 客户端，选型已定）、`pipeline/orchestrate.py`（translate-srt 全流程编排）
 
-## 锁文件与依赖
+### ToolSpec 工具契约隔离层（已提交 d1438bd）
 
-- `uv.lock` 与 `runner/package-lock.json` 均已入库。
-- 仓库根没有 `package-lock.json`（Node 项目在 `runner/` 子目录，锁文件随 Node 项目位于 `runner/package-lock.json`）。
-- 两个锁文件都必须入库，凭据文件不入库（见 `.gitignore`）。
+- 业务工具（`conversation.ts` 的 download/transcribe、`test-tools.ts` 的测试工具）只依赖 `tool-spec.ts` 的中立 `ToolSpec` 契约，零 pi-durable 框架依赖。
+- pi-durable 的 import 收拢到两个文件：`runner.ts` 与 `durable-adapter.ts`。
+- 契约语义（换框架时新实现必须满足）：`replay: "safe"` 崩溃后自动重跑；省略 = unsafe，绝不自动重跑，模型收到 interrupted；`execute` 抛错由框架把错误结果交给模型；`extras.memo` 同名第一次写赢。
+- 验收用例见 `docs/verification/flow-test.md`。
 
-## git 提交状态
+### git 提交状态（已实际读取）
 
-### 已提交（4 个 commit，`git log --oneline` 顺序）
+- 历史提交至 `d1438bd`（ToolSpec 隔离层），共 7 个 commit；本会话全部改动已按用户要求撤销提交，保留在工作区待用户审阅，未提交。
+- 待审阅改动：`AGENTS.md`（Git 规范 + 新增「代理不得自行 commit」规则）、`docs/TECH_STACK.md`（待验证项回填 + 转写端点路径修正）、`docs/HANDOFF.md`（本会话任务收官）、新增 `docs/verification/scribe-idempotency-doc-review.md` 与 `docs/verification/scribe-idempotency-controlled-test.md`。
+- 知识库仓（`~/.translate-srt/knowledge`）：init 脚本自带一次提交；我的「移除示例域 seiyuu」提交已撤销，删除暂存中待审阅。
 
-| commit | 内容概览 |
+## 本会话完成的任务（两个，均已收官）
+
+### Scribe 幂等键服务端语义查证（已完成：文档 + 受控实测）
+
+背景：`docs/REQUIREMENTS.md` 要求转写调用携带幂等键（episode guid + 音频 hash），重试不产生二次计费。但 `docs/IMPLEMENTATION_PLAN.md` 明确：服务端是否支持、有效期和异常语义必须先查证，不能把本地去重当作服务端不重复计费的证明。
+
+完成状态：两半均已做完。结论——官方文档与受控实测均证实 Scribe 无幂等键机制，「同键重试不重复计费」不成立；凭 `transcription_id` 的 GET 取回路径可用；付费调用自动重试保持关闭。证据与影响见 `docs/verification/scribe-idempotency-doc-review.md`（文档查证）与 `docs/verification/scribe-idempotency-controlled-test.md`（受控实测）。遗留：usage 面板读数待用户核对后回填实测记录。
+
+分两半推进（已归档为验收依据）：
+
+- 文档查证（无需 key，可立即做，结论需用户审阅）
+  - 查官方文档，确认 Scribe 转写接口对幂等键的支持情况与语义边界。
+  - 查证项：请求键是否支持、参数名（header 或 body 字段）、作用域（账号级 / 端点级 / 请求级）、有效期（多久内重发同键视为同一次）、超时后的查询或对账手段（GET transcript by id 能否查到、能否以同键续查）、计费语义（重试同键是否只计一次、键过期后重发是否另计）。
+  - 产出写入 `docs/verification/`，并回填 `docs/TECH_STACK.md` 待验证项。
+  - 文档查证结论是「供应商声称的语义」，仍需用户审阅确认是否接受作为依据，不能替代受控验证。
+
+- 受控验证（需用户配合：Scribe key + 一段短音频）
+  - 用一段短音频做受控调用，验证文档声称的幂等语义在实际行为上成立。
+  - 价格口径：Scribe v2 按音频时长计费（$0.22/小时，2026-11 查证口径），30 秒级短音频成本约 $0.002，可忽略；若需要精确成本，受控验证前按官方定价复核一次。
+  - 重点验证「结果未知时的安全恢复路径」：发出调用后中断，凭同键重发或查询是否不重复计费、能否拿到已有结果。
+  - 短音频不要求是正式样本节目，只要能触发真实转写即可；正式样本节目另属「真实转写」阶段，不在本次范围。
+
+验收口径：
+
+- 不能把本地去重当作服务端不重复计费证明；必须落到「服务端对同键重试/查询的实际行为」。
+- 能证明结果未知时安全恢复，则付费调用自动重试语义成立；否则关闭付费调用自动重试并记录阻塞，不以 mock 成功替代真实能力验收。
+
+### 最小英超知识库 init（已完成）
+
+- 已用 `kb_tools.py init` 建库：默认位置 `~/.translate-srt/`，`status` 通过，独立 git 仓（未落入本项目仓库）；已移除 skill 示例域 seiyuu（提交于知识库仓）。
+- 领域包命名与粒度仍按 `.agent/knowledge-base.md` 未决项处理，本会话只建空骨架。
+- 迁移方式：改 `TRANSLATE_SRT_HOME` 环境变量即可，不复制产物、不改 git 历史。
+- 位置约定与复用边界见 `docs/verification/translate-srt-reuse.md`。
+
+### 需要用户配合 / 决策的点（本次会话范围内，详情见下方「待确认开放问题」）
+
+| 决策点 | 简短说明 |
 | --- | --- |
-| `6660e8a` | 仓库骨架：docs 文档、模块目录规划、kickoff 计划、skill 文件导入 |
-| `87141d4` | Python 环境定稿：uv + pyproject + uv.lock（httpx / mutagen / pytest） |
-| `9ba23bf` | state 模块、下载固化工具、转写客户端选型回填 |
-| `561110f` | 最小 MVP：state、下载、词级重组、translate-srt 自检、Runner 薄封装 |
+| Scribe key 提供时机 | 已解决：已写入 `.env`（`ELEVENLABS_API_KEY`，已 gitignore） |
+| 受控验证是否做 | 已做：短音频由本地 `say` 合成（38.4 秒 WAV），实测完成 |
+| 知识库位置是否用默认 | 已定：默认 `~/.translate-srt/`，init 完成 |
+| usage 面板读数核对 | 受控验证计费口径（约 $0.009）待用户在 ElevenLabs 后台核对后回填实测记录 |
 
-### 未提交（5 个文件，工作区修改，均未 staged）
-
-| 文件 | 改动内容 |
-| --- | --- |
-| `AGENTS.md` | 新增「测试规范」章节（测试文件头场景注释规范） |
-| `.agent/pi-durable-vs-langgraph.md`、`docs/NEXT_STEPS.md`、`docs/TECH_STACK.md`、`docs/verification/translate-srt-reuse.md` | 阶段术语更名收尾（垂直切片→最小 MVP、本地地基→本地代码→基础架构、骨架接通→流程测试） |
-
-- 这批未提交改动本质是「最小 MVP 内部阶段术语统一」的收尾，与本文档的阶段术语一致，提交前无需再逐个拆解。
-
-## 接手第一步
-
-- 先确认并提交这 5 个未提交文件（一次 commit，术语统一收尾），再开始流程测试。
-- 不要带着脏工作区继续开发；提交 message 可注明「阶段术语更名收尾 + AGENTS 测试规范」。
-
-## 关键决策记录（本阶段新定，含来源文档）
+## 关键决策记录（含来源文档）
 
 | 决策 | 结论 | 来源文档 |
 | --- | --- | --- |
-| 转写客户端 | 直接 HTTP（httpx），不用 ElevenLabs 官方 SDK；依据：本项目只用 Scribe 一小面（POST + GET），便于携带幂等键头、原始响应落盘、复用已定 httpx、避免 SDK 版本 churn | `docs/TECH_STACK.md` 选型决策记录、`docs/NEXT_STEPS.md` 已定小决策 |
-| 分层-目录映射 | `discover/`（发现层）、`runner/` + `pipeline/`（执行层）、`state/`（跨层数据契约，schema 归执行层维护）、`review/` + `eval/`（审核层）、`delivery/`（交付层）；层间只经数据契约与接口边界交互 | `docs/TECH_STACK.md` 目录与部署拓扑、`docs/NEXT_STEPS.md` 仓库骨架与归属 |
-| Runner 薄封装职责 | 只暴露 submit / resume / checkpoint，隔离 Pi Durable 实验 API；业务工具不直接依赖实验接口细节 | `docs/ARCHITECTURE.md` 执行层、`docs/NEXT_STEPS.md`、`runner/src/runner.ts` |
-| 测试文件头场景注释规范 | 每个测试文件开头用几行注释列出本文件模拟的场景清单（正常与异常路径） | `AGENTS.md` 测试规范、`docs/NEXT_STEPS.md` 执行约定 |
-| 文档管理规则 | 需求文档为权威；不轻易新增文档，优先更新既有文档；多轮文档先确认再创建子代理；与子代理文档迭代最多 3 轮 | `AGENTS.md` 项目文档 |
-| 模块级提交规则 | 一个模块的代码与测试全部通过后 commit 一次，message 注明模块与产出，不必每个任务一次 | `docs/NEXT_STEPS.md` 执行约定 |
-| 本阶段其他已定技术项 | uv + pyproject + uv.lock + Python 3.12；pytest；httpx；mutagen；Pi Durable pin 1.5.0；Node LTS（engines >=22.19.0）；首期跳过联网调研、沉淀留到交付后 | `docs/NEXT_STEPS.md` 已定小决策、`runner/package.json`、`pyproject.toml` |
+| 转写客户端 | 直接 HTTP（httpx），不用 ElevenLabs 官方 SDK；便于携带幂等键头做服务端语义验证、原始响应落盘、复用已定 httpx | `docs/TECH_STACK.md` 选型决策记录 |
+| ToolSpec 工具契约隔离层 | 业务工具零框架依赖，pi-durable import 收拢到 runner.ts 与 durable-adapter.ts；换框架只重写这两个文件 | `runner/src/tool-spec.ts`、`runner/src/durable-adapter.ts`、commit d1438bd |
+| 分层-目录映射 | discover=发现层、runner+pipeline=执行层、state=跨层数据契约（schema 归执行层维护）、review+eval=审核层、delivery=交付层；层间只经数据契约与接口边界 | `docs/TECH_STACK.md`、`docs/NEXT_STEPS.md` |
+| Runner 薄封装职责 | 暴露 submit / resume / continue / checkpoint，隔离 Pi Durable 实验 API；业务工具不直接依赖实验接口 | `docs/ARCHITECTURE.md`、`runner/src/runner.ts` |
+| safe / unsafe 工具语义 | safe 崩溃后自动重跑、unsafe 绝不自动重跑且模型收到 interrupted；已由流程测试验证 | `docs/verification/flow-test.md` |
+| 测试文件头场景注释规范 | 每个测试文件开头用几行注释列出模拟场景清单 | `AGENTS.md` 测试规范 |
+| Git 提交前读取规范 | 每次准备提交前先 `git log --oneline` 与 `git status` 实际读取，再决定提交内容与 message | `AGENTS.md` Git 规范 |
+| 文档管理规则 | 需求文档为权威；不轻易新增文档，优先更新既有文档；多轮文档先确认再创建子代理，迭代最多 3 轮 | `AGENTS.md` 项目文档 |
+| 模块级提交规则 | 一个模块代码与测试全过后 commit 一次，message 注明模块与产出 | `docs/NEXT_STEPS.md` 执行约定 |
 
-## 执行纪律（本阶段红线）
+## 执行纪律（红线）
 
 - 最小 MVP 完成前不扩展 feed 调度、不批量触发付费转写。
 - 外部幂等或恢复语义不成立时，自动重试保持关闭并记录阻塞。
-- 来源：`docs/IMPLEMENTATION_PLAN.md`「阶段推进与交接」章节。
+- 提交前先 `git log --oneline` 与 `git status` 实际读取，不凭记忆推断 git 状态。
+- 来源：`docs/IMPLEMENTATION_PLAN.md`「阶段推进与交接」、`AGENTS.md` Git 规范。
 
-## 待确认开放问题（阻塞型，每项带影响与推荐默认值）
+## 待确认开放问题（阻塞型，长期清单）
 
 | 问题 | 影响 | 推荐默认值 |
 | --- | --- | --- |
-| Scribe API key | 阻塞真实转写阶段全部任务；基础架构与流程测试不受影响 | 环境变量 `ELEVENLABS_API_KEY`，不入库、不写日志、不进 git |
-| 模型凭据（翻译快模型、复核同档模型、调研快模型） | 阻塞翻译与复核阶段 | 环境变量；翻译与调研用快模型、复核同档强模型，具体供应商与型号待凭据确认 |
-| 样本节目（一期真实 mp3 或 RSS 链接） | 阻塞真实转写与翻译复核；本地合成/固定响应测试不受阻 | 一期 Chelsea 相关比赛日节目，英文、多说话人、时长适中；未提供前先用合成词级 JSON 与已保存产物做可重复测试 |
-| 模型路由（具体供应商与型号） | 影响翻译、复核执行与成本基线 | 遵循 skill 约定：翻译可用快模型、复核与主代理同档、调研用快模型 |
-| 项目命名（Python 包名、Node 项目名、SQLite 文件名） | 三者连锁，改名是全局动作 | 按 `podcast_agent` 开工，用户定名后一次性全局重命名；成本低，建议在首次真实数据与多期 commit 前定名 |
-| 知识库位置（`TRANSLATE_SRT_HOME` 或 config） | 阻塞 match / glossary 与全流程编排（可用默认位置先建空库） | 独立 git 仓 + 环境变量 `TRANSLATE_SRT_HOME`；缺省 `~/.translate-srt/`；迁移 = 改环境变量，不复制产物、不改 git 历史；缺库先 `kb_tools.py init`；不入本项目仓库 |
-| 样本节目说话人身份 | 影响词级重组前缀、术语表、翻译人称 | 词级重组默认输出 `[S01] ` 占位；真名在 skill 的 speakers 步骤用 `--map` 落实；匿名素材按 pitfalls 给处置选项（全部 `--drop` / 换角色名 / 只给非旁白加角色名），不臆造真名 |
+| Scribe API key | 已解决：`.env` 中 `ELEVENLABS_API_KEY`（不入库、不写日志、不进 git） | 环境变量 `ELEVENLABS_API_KEY`，不入库、不写日志、不进 git |
+| 受控验证短音频 | 已解决：本会话用本地 `say` 合成 38.4 秒语音完成实测；正式样本节目另属真实转写阶段 | 一段短音频即可（30 秒级，成本约 $0.002 可忽略）；正式样本节目另属真实转写阶段 |
+| Scribe 计费实测读数 | 已结案（2026-11-06 充值后重测）：PAYG 期 $0.2200/h 零残差吻合官方定价，此前 $0.40/h 系免费计划 credit 折算口径，费用基线维持需求 $0.18/49 分钟，无需重估 | 结案节见 `docs/verification/scribe-idempotency-controlled-test.md` |
+| 需求修订（幂等键不成立） | 查证证实服务端无幂等键，`docs/REQUIREMENTS.md`「重试不产生二次计费」需修订为「本地防重复触发 + 凭 transcription_id 恢复」，待用户确认后改 | 修订提案见 `docs/verification/scribe-idempotency-controlled-test.md`「对项目的影响」 |
+| 模型凭据（翻译快模型、复核同档模型、调研快模型） | 已解决（2026-11-06）：`.env` 中 `DEEPSEEK_API_KEY` 已填并实测可用 | DeepSeek 先行；翻译 `deepseek-flash`、复核 `deepseek-v4-pro`、调研 `deepseek-flash` |
+| 样本节目（一期真实 mp3 或 RSS 链接） | 已选定（2026-11-06）：《Boss with Jamie Carragher: Xabi Alonso》，Sky Sports PL Podcast，2026-10-26，37:29，36MB，卡拉格专访切尔西主帅阿隆索 | enclosure `https://episodes.captivate.fm/episode/8db0bde6-c9cb-43be-92ab-b18987fbdc58.mp3`（feed `https://feeds.captivate.fm/sky-sports-premierleague/`，已实测 200）；转写成本预估 ≈$0.14（$0.22/h）；双人访谈形态，与比赛日多人圆桌的差异不影响下游测试 |
+| 模型路由（具体供应商与型号） | 已定（2026-11-06）：`.env` 路由变量 `PODCAST_MODEL_TRANSLATE/REVIEW/RESEARCH` = `deepseek/deepseek-flash`、`deepseek/deepseek-v4-pro`、`deepseek/deepseek-flash`；换 provider 只改路由行 + 对应 key | 均为推理模型，`effort` 支持 low/high/max（默认 high），批量任务建议 low，接线时定 |
+| 项目命名 | 三者连锁，改名是全局动作 | 按 `podcast_agent` 开工，用户定名后一次性全局重命名；建议在首次真实数据与多期 commit 前定名 |
+| 知识库位置（`TRANSLATE_SRT_HOME`） | 阻塞 match / glossary 与全流程编排（本次只 init，可用默认位置先做） | 独立 git 仓 + 环境变量；缺省 `~/.translate-srt/`；迁移 = 改环境变量，不复制产物、不改 git 历史 |
+| 样本节目说话人身份 | 影响词级重组前缀、术语表、翻译人称 | 词级重组默认输出 `[S01] ` 占位；真名用 `speakers --map` 落实；匿名素材给处置选项，不臆造真名 |
 
-## 下一步行动（流程测试阶段，三个任务）
+## 验收口径
 
-### 单期 conversation 验证
+### 本次会话（已完成，验收依据留档）
 
-- 做什么：验证每步 checkpoint、transcript 持久化、恢复入口、safe / unsafe 工具边界、effect sandwich、memo、parked
-- 验证点：mock 工具 + 固定响应；正常完成后重启从 checkpoint 继续，不重复已确认完成的付费步骤；区分框架提供能力与 Runner 仍需补齐能力
-- 产出位置：`runner/` 内实现；实验记录写入 `docs/verification/`；结论回填 `docs/ARCHITECTURE.md` 文末待验证事项
+- Scribe 幂等键查证结论已落「服务端对同键重试/查询的实际行为」：请求键不支持（文档零命中 + 实测同键不同 ID）、参数名不适用、作用域/有效期不适用、超时后对账手段 = `transcription_id` + GET（实测可用）、计费语义 = 每请求独立计费无去重；文档查证经用户审阅，受控验证有实测证据。
+- 结论已回填 `docs/TECH_STACK.md` 待验证项，证据位置在 `docs/verification/scribe-idempotency-doc-review.md` 与 `docs/verification/scribe-idempotency-controlled-test.md`。
+- 知识库 init 完成且 `kb_tools.py status` 通过；产物为独立 git 知识库（`~/.translate-srt/`），未落入本项目仓库。
 
-### kill -9 崩溃恢复实验
+### 最小 MVP 总体（背景口径，非本次全部完成）
 
-- 做什么：在转写 POST 在途、翻译中途、子代理完成回写前、checkpoint 切换四个崩溃点注入 kill -9
-- 验证点：safe 工具重跑、unsafe 工具不重跑、结果未知进入可对账状态而非再次扣费
-- 产出位置：崩溃注入脚本；实验记录写入 `docs/verification/`；结论回填 `docs/ARCHITECTURE.md` 待验证事项
+- 同一期音频产出英文 SRT、修正稿、中文译文、复核稿、重切分候选、术语表和检查记录；产物真实存在且关联正确。
+- 英文句子边界可回溯词级时间戳；译文与原文对齐，无未解释漏译、时间轴差异或越界插值。
+- 正常完成后重启从 checkpoint 继续，不重复已确认完成的付费步骤；调用已发出但 outcome 未落盘的窗口中断时进入可对账状态而非再次扣费。
+- 审核前没有任何上传或交付动作；人工修改保护要求已纳入后续数据契约。
+- 架构待验证事项有可复现实验结果；仍存在的外部阻塞写明影响，不以 mock 成功替代真实能力验收。
 
-### 下载工具接入为真实 safe 工具
+## 接手第一步
 
-- 做什么：把 `pipeline/download.py` 封装为经 bash 调用的工具，落盘单期工作区与首版固化记录
-- 验证点：本地起 http 源验证 302 重定向与 sha256；重跑安全（同 hash 复用）；动态广告 hash 漂移告警并保留首版
-- 产出位置：`runner/` 工具封装、单期工作区产物
+- 先 `git log --oneline` + `git status` 实际读取状态：本会话改动全部未提交（待用户审阅），审阅批准后才提交。
+- 计费已核对（日账单）；如需最终归属确认：Request Log 逐请求导出 + 核对账号套餐费率（实测有效单价 ≈ $0.40/h，与文档 $0.22/h 不一致）。
+- 待用户确认需求修订提案（幂等键不成立），改 `docs/REQUIREMENTS.md`。
+- 然后推进「真实转写」：`pipeline/scribe.py`（用 `POST /v1/speech-to-text`，落盘 `transcription_id` + 原始响应，实现正在另一会话讨论）与词级重组接真实响应；外部前置（key、计费口径、样本）已全部就绪。
 
-## 验收口径摘要（最小 MVP）
+## 接手常用命令
 
-- 同一期音频产出英文 SRT、修正稿、中文译文、复核稿、重切分候选、术语表和检查记录；产物真实存在且关联正确
-- 英文句子边界可回溯词级时间戳；译文与原文对齐，无未解释漏译、时间轴差异或越界插值
-- 正常完成后重启从 checkpoint 继续，不重复已确认完成的付费步骤；调用已发出但 outcome 未落盘的窗口中断时进入可对账状态而非再次扣费
-- 审核前没有任何上传或交付动作；人工修改保护要求已纳入后续数据契约
-- 架构待验证事项有可复现实验结果；仍存在的外部阻塞写明影响，不以 mock 成功替代真实能力验收
-
-## 当前被阻塞项清单
-
-- 真实转写（阻塞源：Scribe API key + 样本节目）
-- 翻译与复核（阻塞源：模型凭据 + 知识库位置 + 样本节目）
-- 费用与耗时基线及最小 MVP 交接（阻塞源：依赖真实调用）
-- 以上阻塞项在开放问题未确认前应跳过并在交接记录注明，不静默降级
-
-## 接手自检命令
-
-| 目的 | 命令 |
+| 用途 | 命令 |
 | --- | --- |
-| Python 全部测试 | `uv run pytest tests/`（当前 23 个全过） |
-| Node 类型检查 | `cd runner && npm run typecheck`（当前通过） |
-| Node 全部测试 | `cd runner && npm test`（当前 3 个全过） |
-| skill 未误改回归 | `uv run python skills/translate-srt/scripts/srt_tools.py --self-test`、`uv run python skills/translate-srt/scripts/kb_tools.py --self-test` |
+| Python 全部测试（自检） | `uv run pytest tests/`（当前 24 个全过） |
+| Node 类型检查（自检） | `cd runner && npm run typecheck`（当前通过） |
+| Node 全部测试（自检） | `cd runner && npm test`（当前 10 个全过） |
+| skill 未误改回归（自检） | `uv run python skills/translate-srt/scripts/srt_tools.py --self-test`、`uv run python skills/translate-srt/scripts/kb_tools.py --self-test` |
+| 知识库 init（任务命令） | `uv run python skills/translate-srt/scripts/kb_tools.py init`（建空库骨架，默认 `~/.translate-srt/` 或 `--home DIR`） |
+| 知识库状态（任务命令） | `uv run python skills/translate-srt/scripts/kb_tools.py status`（确认路径解析、领域条目数与 git 状态） |
