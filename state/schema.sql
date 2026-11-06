@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS artifact (
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX idx_artifact_episode ON artifact(episode_id);
+CREATE INDEX IF NOT EXISTS idx_artifact_episode ON artifact(episode_id);
 
 -- 账本：每次付费调用一行，intent 先落、outcome 后更新（effect sandwich）
 CREATE TABLE IF NOT EXISTS ledger (

@@ -61,3 +61,22 @@ def get_by_ref(conn: sqlite3.Connection, call_ref: str) -> Optional[sqlite3.Row]
     return conn.execute(
         "SELECT * FROM ledger WHERE call_ref = ?", (call_ref,)
     ).fetchone()
+
+
+def reconcile_success(conn: sqlite3.Connection, call_ref: str) -> None:
+    """对账核销：仅允许 unknown → success。
+
+    用于人工/半自动对账拿到明确服务端 ID、且同 ID 完整结果已落盘后，
+    把「结果未知」的调用核销为成功。intent / failed / success 均拒绝，
+    不放宽 record_outcome 的通用语义，不允许终态任意跳转。
+    """
+    cur = conn.execute(
+        "UPDATE ledger SET status = 'success' WHERE call_ref = ? AND status = 'unknown'",
+        (call_ref,),
+    )
+    if cur.rowcount != 1:
+        row = get_by_ref(conn, call_ref)
+        current = row["status"] if row is not None else None
+        conn.rollback()
+        raise ValueError(f"reconcile_success 要求 unknown 态，当前为 {current!r}")
+    conn.commit()

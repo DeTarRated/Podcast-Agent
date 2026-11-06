@@ -6,6 +6,7 @@
 - 音频固化（sha256 + 时长写入）
 - 产物清单生命周期与删除 Episode 后的外键级联
 - 账本 intent→outcome 两段式、call_ref 重复拒绝、unknown 对账态、非法 outcome 拒绝
+- reconcile_success 核销：仅 unknown→success，intent/failed/success/不存在均拒绝
 """
 import sqlite3
 
@@ -175,3 +176,37 @@ def test_ledger_invalid_outcome_status(conn):
     )
     with pytest.raises(ValueError):
         ledger.record_outcome(conn, call_ref, status="maybe")
+
+
+def _seed_ledger_with_status(conn, call_ref: str, status: str) -> None:
+    ledger.record_intent(
+        conn,
+        episode_id=None,
+        purpose="transcribe",
+        provider="elevenlabs",
+        model="scribe_v2",
+        usage_basis="x",
+        amount_est=None,
+        call_ref=call_ref,
+    )
+    if status != "intent":
+        ledger.record_outcome(conn, call_ref, status=status)
+
+
+def test_ledger_reconcile_success_from_unknown(conn):
+    _seed_ledger_with_status(conn, "r:unknown", "unknown")
+    ledger.reconcile_success(conn, "r:unknown")
+    assert ledger.get_by_ref(conn, "r:unknown")["status"] == "success"
+
+
+@pytest.mark.parametrize("status", ["intent", "failed", "success"])
+def test_ledger_reconcile_success_rejects_other_statuses(conn, status):
+    _seed_ledger_with_status(conn, f"r:{status}", status)
+    with pytest.raises(ValueError):
+        ledger.reconcile_success(conn, f"r:{status}")
+    assert ledger.get_by_ref(conn, f"r:{status}")["status"] == status
+
+
+def test_ledger_reconcile_success_missing_ref(conn):
+    with pytest.raises(ValueError):
+        ledger.reconcile_success(conn, "r:missing")

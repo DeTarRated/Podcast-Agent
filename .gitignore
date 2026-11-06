@@ -18,3 +18,6 @@ node_modules/
 
 # 系统文件
 .DS_Store
+
+# 临时过程稿（子代理施工图纸等，非正式文档）
+.agent/tmp/
