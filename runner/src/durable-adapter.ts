@@ -12,7 +12,7 @@ const subagentTask = defineSubagentTask();
 const REPO_ROOT = resolve(import.meta.dirname, "../..");
 
 /** 经 Python 窄 CLI 写账本（Node 不拼 SQL）。失败抛错。 */
-async function ledgerCli(command: "intent" | "outcome", args: string[]): Promise<void> {
+async function ledgerCli(command: "intent" | "outcome" | "reconcile", args: string[]): Promise<void> {
   const r = await runCommand("uv", ["run", "python", "-m", "state.ledger_cli", command, ...args], {
     cwd: REPO_ROOT,
     timeoutMs: 30_000,
@@ -45,6 +45,23 @@ async function writeOutcome(
   if (usageBasis) args.push("--usage-basis", usageBasis);
   if (meta.dbPath) args.push("--db", meta.dbPath);
   await ledgerCli("outcome", args);
+}
+
+async function getLedgerStatus(callRef: string, dbPath?: string): Promise<string> {
+  const args = ["--call-ref", callRef];
+  if (dbPath) args.push("--db", dbPath);
+  const r = await runCommand("uv", ["run", "python", "-m", "state.ledger_cli", "get", ...args], {
+    cwd: REPO_ROOT, timeoutMs: 30_000,
+  });
+  const lastLine = r.stdout.trim().split("\n").at(-1) ?? "{}";
+  return (JSON.parse(lastLine) as { status: string }).status;
+}
+
+async function reconcileLedger(callRef: string, usageBasis: string | undefined, dbPath?: string): Promise<void> {
+  const args = ["--call-ref", callRef];
+  if (usageBasis) args.push("--usage-basis", usageBasis);
+  if (dbPath) args.push("--db", dbPath);
+  await ledgerCli("reconcile", args);
 }
 
 export function toDurableTools(specs: readonly ToolSpec[]): ToolRegistration[] {
@@ -100,26 +117,31 @@ export function toDurableTools(specs: readonly ToolSpec[]): ToolRegistration[] {
               settled = await api.waitForTask(taskId as never, context);
             }
             const outcome = (settled as { state?: { outcome?: { status: string; result?: SubagentResult } } }).state?.outcome;
-            // 账本 outcome：成功/失败据终态回填；结果未知记 unknown，不自动重派
-            if (input.ledger && !reused) {
+            // 账本 outcome：新任务直接写；reused 但账本非 success 时补账（unknown→success reconcile）
+            if (input.ledger) {
+              const usageOf = (result: unknown): string | undefined => {
+                const u = (result as { usage?: Record<string, number | boolean | undefined> })?.usage;
+                if (!u) return undefined;
+                return u.input !== undefined
+                  ? `input_tokens=${u.input};output_tokens=${u.output};cache_read=${u.cacheRead ?? 0}` +
+                    (u.costTotal !== undefined ? `;cost_usd=${u.costTotal}` : "")
+                  : `prompt_tokens=${u.promptTokens};completion_tokens=${u.completionTokens}`;
+              };
+              const currentStatus = await getLedgerStatus(input.callRef, input.ledger.dbPath);
               if (outcome?.status === "completed" && outcome.result) {
-                const u = outcome.result.usage as {
-                  promptTokens?: number; completionTokens?: number;
-                  input?: number; output?: number; cacheRead?: number;
-                  costTotal?: number; costFromProvider?: boolean;
-                } | undefined;
-                // 兼容模拟（promptTokens/completionTokens）与真实 pi-ai（input/output）两种结构
-                const usageBasis = u
-                  ? (u.input !== undefined
-                      ? `input_tokens=${u.input};output_tokens=${u.output};cache_read=${u.cacheRead ?? 0}` +
-                        (u.costTotal !== undefined ? `;cost_usd=${u.costTotal}` : "")
-                      : `prompt_tokens=${u.promptTokens};completion_tokens=${u.completionTokens}`)
-                  : undefined;
-                await writeOutcome(input.ledger, input.callRef, "success", usageBasis);
-              } else if (outcome?.status === "failed" || outcome?.status === "aborted") {
-                await writeOutcome(input.ledger, input.callRef, "failed");
-              } else {
-                await writeOutcome(input.ledger, input.callRef, "unknown");
+                const usageBasis = usageOf(outcome.result);
+                if (currentStatus === "intent") {
+                  await writeOutcome(input.ledger, input.callRef, "success", usageBasis);
+                } else if (currentStatus === "unknown") {
+                  await reconcileLedger(input.callRef, usageBasis, input.ledger.dbPath);
+                }
+                // 已 success/failed 不改写
+              } else if (!reused) {
+                if (outcome?.status === "failed" || outcome?.status === "aborted") {
+                  if (currentStatus === "intent") await writeOutcome(input.ledger, input.callRef, "failed");
+                } else if (currentStatus === "intent") {
+                  await writeOutcome(input.ledger, input.callRef, "unknown");
+                }
               }
             }
             if (!outcome || outcome.status !== "completed" || !outcome.result) {

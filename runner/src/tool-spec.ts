@@ -34,6 +34,13 @@ export interface ToolExtras {
       model: string;
       dbPath?: string;
     };
+    /** 模型路由（生产必填；测试经 behaviors 注入时可缺省） */
+    model?: { provider: string; modelId: string };
+    /** 子代理须先读的规范与上下文文件（绝对路径） */
+    contextFiles?: string[];
+    /** 复核角色的原文基准与日志 */
+    referenceFiles?: string[];
+    targetLang?: string;
   }) => Promise<DispatchResult>;
 }
 

@@ -35,25 +35,29 @@ def record_outcome(
     *,
     status: str,
     amount_est: Optional[float] = None,
+    usage_basis: Optional[str] = None,
 ) -> None:
     """调用结束后把 intent 行推进到终态；只允许从 intent 出发。
 
     status=unknown 用于「调用已发出但结果未知」的可对账状态，
     此时不得自动重跑付费调用。
+    usage_basis 用于在 outcome 阶段回填真实用量（如 token 数）；未提供时保留 intent 原值。
     """
     if status not in OUTCOME_STATUSES:
         raise ValueError(f"invalid outcome status: {status}")
-    if amount_est is None:
-        conn.execute(
-            "UPDATE ledger SET status = ? WHERE call_ref = ? AND status = 'intent'",
-            (status, call_ref),
-        )
-    else:
-        conn.execute(
-            "UPDATE ledger SET status = ?, amount_est = ? "
-            "WHERE call_ref = ? AND status = 'intent'",
-            (status, amount_est, call_ref),
-        )
+    sets = ["status = ?"]
+    params: list = [status]
+    if amount_est is not None:
+        sets.append("amount_est = ?")
+        params.append(amount_est)
+    if usage_basis is not None:
+        sets.append("usage_basis = ?")
+        params.append(usage_basis)
+    params.append(call_ref)
+    conn.execute(
+        f"UPDATE ledger SET {', '.join(sets)} WHERE call_ref = ? AND status = 'intent'",
+        params,
+    )
     conn.commit()
 
 

@@ -57,8 +57,11 @@ export interface SubagentResult {
 
 const ROLE_PROMPTS: Record<string, string> = {
   translate:
-    "你是足球播客字幕翻译。把给定 SRT 字幕（编号<TAB>原文）翻译成简体中文。" +
-    "输出一行一条「编号<TAB>译文」，一一对应、不合并不拆条、不增删、不写时间轴、不换行。" +
+    "你是足球播客字幕翻译。把给定 SRT 字幕条目翻译成简体中文。\n" +
+    "【输出格式硬性要求】每行一条，严格为「编号<TAB>译文」——编号后紧跟一个制表符(TAB)，再跟译文。" +
+    "禁止三段式（编号单独一行、译文另一行、空行分隔）。\n" +
+    "示例输入：\n1\t[S01] Hello there.\n\n示例输出：\n1\t[卡拉格] 你好。\n" +
+    "一一对应、不合并不拆条、不增删、不写时间轴、译文内不换行不空行。" +
     "说话人前缀按术语表译，专名遵循术语表，语域遵循简报风格基调，长句在语义停顿处加逗号，数字不用千位分隔符。",
   review:
     "你是字幕复核。对照原文基准与译文，检出并修正漏译、错译、术语不一致、说话人前缀丢失或译名不一致、语体错位。" +
@@ -131,8 +134,22 @@ async function runSubagent(
     ? "\n\n以下是你必须先读的规范与上下文：\n" + contextParts.join("\n\n")
     : "");
 
+  // 翻译角色：把 SRT 转成「编号<TAB>原文」（剥离时间轴），模型只输出译文
+  const toTabbed = (srt: string): string => {
+    const blocks = srt.trim().split(/\n\s*\n/);
+    const lines: string[] = [];
+    for (const b of blocks) {
+      const rows = b.split("\n");
+      if (rows.length >= 3 && /^\d+$/.test(rows[0].trim())) {
+        const text = rows.slice(2).join(" ").trim();
+        lines.push(`${rows[0].trim()}\t${text}`);
+      }
+    }
+    return lines.join("\n");
+  };
+
   const userContent = input.role === "translate"
-    ? `翻译以下条目为简体中文：\n\n${sourceText}`
+    ? `翻译以下条目为简体中文（输入为「编号<TAB>原文」，输出「编号<TAB>译文」）：\n\n${toTabbed(sourceText)}`
     : input.role === "review"
       ? `原文基准与参考：\n${references}\n\n待复核译文：\n${sourceText}`
       : `调研以下缺口：\n${sourceText}`;
