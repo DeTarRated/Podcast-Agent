@@ -2,8 +2,50 @@
 //
 // 换框架时只有本文件与 runner.ts 需要重写；业务工具与 ToolSpec 契约不变。
 import { defineExtension, defineTool, type Registry, type ToolRegistration } from "@earendil-works/pi-durable";
+import { resolve } from "node:path";
 
+import { runCommand } from "./bash.ts";
 import type { JsonValue, ToolSpec } from "./tool-spec.ts";
+import { defineSubagentTask, type SubagentInput, type SubagentResult } from "./experiment-subagent.ts";
+
+const subagentTask = defineSubagentTask();
+const REPO_ROOT = resolve(import.meta.dirname, "../..");
+
+/** 经 Python 窄 CLI 写账本（Node 不拼 SQL）。失败抛错。 */
+async function ledgerCli(command: "intent" | "outcome", args: string[]): Promise<void> {
+  const r = await runCommand("uv", ["run", "python", "-m", "state.ledger_cli", command, ...args], {
+    cwd: REPO_ROOT,
+    timeoutMs: 30_000,
+  });
+  if (r.exitCode !== 0) {
+    throw new Error(`ledger ${command} 失败: ${r.stdout.trim()} ${r.stderr.trim()}`);
+  }
+}
+
+async function writeIntent(meta: NonNullable<SubagentInput["ledger"]> & object, callRef: string): Promise<void> {
+  const args = [
+    "--episode-id", String(meta.episodeId),
+    "--purpose", meta.purpose,
+    "--provider", meta.provider,
+    "--model", meta.model,
+    "--call-ref", callRef,
+    "--usage-basis", "phase=intent",
+  ];
+  if (meta.dbPath) args.push("--db", meta.dbPath);
+  await ledgerCli("intent", args);
+}
+
+async function writeOutcome(
+  meta: { dbPath?: string },
+  callRef: string,
+  status: "success" | "failed" | "unknown",
+  usageBasis?: string,
+): Promise<void> {
+  const args = ["--call-ref", callRef, "--status", status];
+  if (usageBasis) args.push("--usage-basis", usageBasis);
+  if (meta.dbPath) args.push("--db", meta.dbPath);
+  await ledgerCli("outcome", args);
+}
 
 export function toDurableTools(specs: readonly ToolSpec[]): ToolRegistration[] {
   return specs.map((spec) =>
@@ -15,6 +57,76 @@ export function toDurableTools(specs: readonly ToolSpec[]): ToolRegistration[] {
       async execute(args, api, context) {
         const extras = {
           memo: (name: string, candidate: JsonValue) => api.memo(name, candidate, context),
+          dispatch: async (input: SubagentInput) => {
+            const kind = subagentTask.definition.name;
+            // 跨调用去重：扫描本 conversation 下同 kind 任务的 input.callRef，命中则复用既有任务
+            //（memo 存在工具任务上、不跨调用，不能用于跨调用去重）
+            let taskId: string | undefined;
+            let cursor: Record<string, JsonValue> | undefined;
+            do {
+              const page = await api.commit(
+                (tx) => tx.scanTasks({ conversationId: api.conversationId, kind }, 100, cursor),
+                context,
+              );
+              for (const record of page.items) {
+                const rec = record as { id: unknown; input?: { callRef?: string } };
+                if (rec.input?.callRef === input.callRef) {
+                  taskId = String(rec.id);
+                  break;
+                }
+              }
+              cursor = page.next;
+            } while (cursor !== undefined && taskId === undefined);
+            const reused = taskId !== undefined;
+            if (taskId === undefined) {
+              // 新付费任务：intent 先于 createTask；intent 失败则不创建任务
+              if (input.ledger) {
+                await writeIntent(input.ledger, input.callRef);
+              }
+              try {
+                taskId = String(
+                  await api.createTask(subagentTask, input, { ownership: { kind: "conversation" } }, context),
+                );
+              } catch (err) {
+                // createTask 失败：付费请求未发出，记 failed
+                if (input.ledger) await writeOutcome(input.ledger, input.callRef, "failed");
+                throw err;
+              }
+            }
+            let settled = await api.waitForTask(taskId as never, context);
+            // 防御：waitForTask 在竞态下可能返回 running 快照（resume 场景），循环等 terminal
+            for (let i = 0; i < 100 && (settled as { state?: { status?: string } }).state?.status !== "terminal"; i++) {
+              await new Promise((r) => setTimeout(r, 50));
+              settled = await api.waitForTask(taskId as never, context);
+            }
+            const outcome = (settled as { state?: { outcome?: { status: string; result?: SubagentResult } } }).state?.outcome;
+            // 账本 outcome：成功/失败据终态回填；结果未知记 unknown，不自动重派
+            if (input.ledger && !reused) {
+              if (outcome?.status === "completed" && outcome.result) {
+                const u = outcome.result.usage as {
+                  promptTokens?: number; completionTokens?: number;
+                  input?: number; output?: number; cacheRead?: number;
+                  costTotal?: number; costFromProvider?: boolean;
+                } | undefined;
+                // 兼容模拟（promptTokens/completionTokens）与真实 pi-ai（input/output）两种结构
+                const usageBasis = u
+                  ? (u.input !== undefined
+                      ? `input_tokens=${u.input};output_tokens=${u.output};cache_read=${u.cacheRead ?? 0}` +
+                        (u.costTotal !== undefined ? `;cost_usd=${u.costTotal}` : "")
+                      : `prompt_tokens=${u.promptTokens};completion_tokens=${u.completionTokens}`)
+                  : undefined;
+                await writeOutcome(input.ledger, input.callRef, "success", usageBasis);
+              } else if (outcome?.status === "failed" || outcome?.status === "aborted") {
+                await writeOutcome(input.ledger, input.callRef, "failed");
+              } else {
+                await writeOutcome(input.ledger, input.callRef, "unknown");
+              }
+            }
+            if (!outcome || outcome.status !== "completed" || !outcome.result) {
+              throw new Error(`子任务未成功完成: ${outcome?.status ?? "unknown"}`);
+            }
+            return { taskId: String(taskId), result: outcome.result as unknown as JsonValue, reused };
+          },
         };
         const result = await spec.execute(args, extras);
         return {

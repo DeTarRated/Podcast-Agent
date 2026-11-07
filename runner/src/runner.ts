@@ -1,20 +1,11 @@
 // 执行层·Runner 薄封装：隔离 Pi Durable experimental API（submit / resume / checkpoint）
 import type { Context } from "@earendil-works/chord";
-import {
-  createRegistry,
-  Harness,
-  LiveDoc,
-  type Conversation,
-  type Harness as HarnessInstance,
-  type HarnessSettings,
-  type LiveState,
-  type ModelRef,
-  type SettledSubmissionRecord,
-} from "@earendil-works/pi-durable";
+import { createRegistry, Harness, LiveDoc, defineExtension, type Conversation, type Harness as HarnessInstance, type HarnessSettings, type LiveState, type ModelRef, type SettledSubmissionRecord } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Models } from "@earendil-works/pi-ai";
 
 import { installTools } from "./durable-adapter.ts";
+import { defineSubagentTask } from "./experiment-subagent.ts";
 import type { ToolSpec } from "./tool-spec.ts";
 
 export interface RunnerOpenOptions {
@@ -61,6 +52,8 @@ export class Runner {
     if (options.tools && options.tools.length > 0) {
       installTools(registry, options.tools);
     }
+    // 子代理任务定义注册（嵌套任务形态；由 dispatch extras 创建）
+    registry.install(defineExtension({ name: "experiment-tasks", tasks: [defineSubagentTask()] }));
     const harness = await Harness.open(
       storage,
       { models: options.models, registry, settings: options.settings },
