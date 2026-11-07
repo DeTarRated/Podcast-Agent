@@ -4,6 +4,8 @@
 // - replay 声明检查：download 显式 safe，transcribe 省略（默认 unsafe）
 // - 模型脚本化调用真实 download 工具：经 bash 调 pipeline/download.py，本地 HTTP 源 302 跳转，产物落盘且 sha256 正确
 // - 同 hash 重复下载：复用现有文件，无告警
+// - 真实子进程 CLI 冒烟：python -m 模块入口可导入包（防脚本路径直跑的 ModuleNotFoundError），
+//   scribe 对不存在 Episode 的校验失败走单行 JSON + 退出码 1，全程零真实付费 HTTP
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, existsSync, statSync } from "node:fs";
@@ -22,7 +24,7 @@ import {
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
 import { Runner } from "./runner.ts";
-import { episodeInput, pipelineTools } from "./conversation.ts";
+import { episodeInput, pipelineTools, runScribe } from "./conversation.ts";
 
 // 最小合法 MPEG-1 Layer III 静音帧（与 Python 测试一致）
 const SILENT_FRAME = Buffer.concat([Buffer.from([0xff, 0xfb, 0x90, 0x00]), Buffer.alloc(413)]);
@@ -144,4 +146,25 @@ test("同 hash 重复下载：复用现有文件，无告警", async () => {
   assert.ok(existsSync(dest));
   assert.equal(sha256(readFileSync(dest)), sha256(MP3_BYTES));
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("真实子进程 CLI 冒烟：模块入口 + 单行 JSON + 退出码", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cli-smoke-"));
+  const dbPath = join(dir, "smoke.sqlite");
+  try {
+    // 对不存在的 Episode 转写：scribe.py 在校验阶段失败，不发任何付费请求
+    const { info, exitCode } = await runScribe("transcribe", [
+      "999999",
+      join(dir, "nonexistent.mp3"),
+      "--workspace",
+      join(dir, "ws"),
+      "--db",
+      dbPath,
+    ]);
+    assert.equal(exitCode, 1);
+    assert.equal(info.status, "failed");
+    assert.match(info.error ?? "", /Episode 不存在/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
