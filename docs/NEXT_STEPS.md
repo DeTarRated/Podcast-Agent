@@ -68,10 +68,10 @@
 
 | 任务 | 做什么 | 产出文件 | 依赖前置 | 阻塞状态 |
 | --- | --- | --- | --- | --- |
-| Scribe 客户端接通 | 接通 Scribe v2 说话人分离与词级时间戳；原始响应落盘到每期工作区且不覆盖 | `pipeline/scribe.py`、每期工作区原始响应文件 | 转写客户端选型、Scribe API key、样本节目 | 前置均已就绪；scribe.py 实现正在另一会话讨论 |
-| Scribe 幂等键服务端语义查证 | 查官方文档并做受控验证：请求键支持、作用域、有效期、超时后查询或对账手段、计费语义 | 查证与受控验证记录；结论回填 `docs/TECH_STACK.md` 待验证项 | Scribe API key | 被 Scribe 凭据阻塞 |
-| 词级重组接真实响应 | 用真实 Scribe 词级 JSON 跑通重组，输出 `[S01] ` 占位前缀；处理缺失词时间戳、未知说话人、异常时间区间，无法生成可信输入时明确失败或等待，不伪造时间点 | `pipeline/wordrender.py` 异常路径 + 对应测试 | 真实转写 | 依赖真实转写产物 |
-| 英文 SRT 输入体检 | 对重组产物跑 `srt_tools.py stats` 体检，判定 merge / split 是否需要；记录说话人前缀形态 | 英文 SRT（一句一条 + `[S01] ` 占位前缀）、体检记录、产物清单与账本写入 | 词级重组接真实响应 | 依赖真实转写产物 |
+| Scribe 客户端接通 | 接通 Scribe v2 说话人分离与词级时间戳；原始响应落盘到每期工作区且不覆盖 | `pipeline/scribe.py`、每期工作区原始响应文件 | 转写客户端选型、Scribe API key、样本节目 | ✅ 已完成：样本期真实转写成功（transcription_id `rBnXktBF69KA1s8RQkeu`，raw + ID sidecar 落盘，Episode → transcribed，账本 success $0.13744 与 usage 实扣分毫不差） |
+| Scribe 幂等键服务端语义查证 | 查官方文档并做受控验证：请求键支持、作用域、有效期、超时后查询或对账手段、计费语义 | 查证与受控验证记录；结论回填 `docs/TECH_STACK.md` 待验证项 | Scribe API key | ✅ 已完成：服务端无幂等键（文档 + 实测），计费口径结案（PAYG $0.22/h），记录见 `docs/verification/scribe-idempotency-*.md` |
+| 词级重组接真实响应 | 用真实 Scribe 词级 JSON 跑通重组，输出 `[S01] ` 占位前缀；处理缺失词时间戳、未知说话人、异常时间区间，无法生成可信输入时明确失败或等待，不伪造时间点 | `pipeline/wordrender.py` 异常路径 + 对应测试 | 真实转写 | ✅ 已完成：真实响应 14061 词零缺失时间戳 → 709 条 `en.srt` + provenance（S01/S02，audio_event 33 个隔离出文本），产物已登记 manifest |
+| 英文 SRT 输入体检 | 对重组产物跑 `srt_tools.py stats` 体检，判定 merge / split 是否需要；记录说话人前缀形态 | 英文 SRT（一句一条 + `[S01] ` 占位前缀）、体检记录、产物清单与账本写入 | 词级重组接真实响应 | ✅ 已完成：709 条体检——merge 不需要；split 仅 #264 需转录修正补句读；87 条长单句留 resplit；speakers 真名映射（S01→Carragher、S02→Alonso）留翻译阶段 |
 
 ### 翻译与复核接通（translate-srt）
 
@@ -161,4 +161,4 @@
 - 用 mock 工具 + 固定响应做单期 conversation 验证与 kill -9 崩溃实验，实验记录写入 `docs/verification/`，结论回填 Durable 能力边界。
 - 用默认位置 `kb_tools.py init` 建空知识库（用户确认位置后改 `TRANSLATE_SRT_HOME` 环境变量迁移，不复制产物、不改 git 历史）。
 
-被开放问题阻塞、暂不能开始的步骤：真实转写与翻译复核的外部前置（Scribe key、计费口径、模型凭据、样本节目）已全部就绪；scribe.py 实现正在另一会话讨论，词级重组接真实响应、翻译与复核依赖其产物。知识库沉淀留待交付后演练；项目命名未定前按 `podcast_agent` 默认开工，用户定名后一次性全局重命名。
+被开放问题阻塞、暂不能开始的步骤：真实转写阶段已完成（样本期全链路产物与账本落盘，`var/episodes/1/`）；翻译与复核无外部阻塞，进入子代理接入方式实验与 skill 全流程编排。知识库沉淀留待交付后演练；项目命名未定前按 `podcast_agent` 默认开工，用户定名后一次性全局重命名。

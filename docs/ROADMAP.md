@@ -21,9 +21,9 @@
 | --- | --- | --- | --- | --- | --- |
 | 发现播客 | cron 轮询 + ETag/304 + guid 去重 + 分类过滤，新期入队 | 发现层 `discover/` | 自动化主链 | ⬜ | REQUIREMENTS·节目源管理/增量发现、IMPLEMENTATION_PLAN·自动化主链 |
 | 下载 | 跟随 302 下载 mp3，sha256/大小/时长固化，首版保护，重试 | 执行层 `pipeline/download.py` | 最小 MVP·基础架构 | ✅ | NEXT_STEPS·最小下载工具 |
-| 转写 | Scribe v2 说话人分离 + 词级时间戳，原始响应落盘 | 执行层 `pipeline/scribe.py`（待建）+ runner transcribe 占位 | 最小 MVP·真实转写 | 🟡 前置全部就绪（key、计费口径 $0.22/h、样本节目已选定）；scribe.py 实现正在另一会话讨论 | NEXT_STEPS·真实转写、flow-test |
-| 词级重组 | 词级 JSON → 一句一条英文 SRT + 说话人前缀 + provenance sidecar | 执行层 `pipeline/wordrender.py` | 最小 MVP·基础架构 | ✅（合成词级 JSON 已验；接真实响应依赖真实转写产物） | NEXT_STEPS·词级重组新组件 |
-| 翻译与复核 | translate-srt 全流程：体检、知识库、术语表、翻译、复核、重切分、provenance | 执行层 `pipeline/orchestrate.py`（待建）+ `skills/translate-srt/` | 最小 MVP·翻译与复核 | 🟡 凭据已就绪（DeepSeek flash 翻译/调研 + v4-pro 复核）；依赖上游真实转写产物，`pipeline/orchestrate.py` 未实现 | NEXT_STEPS·翻译与复核接通 |
+| 转写 | Scribe v2 说话人分离 + 词级时间戳，原始响应落盘 | 执行层 `pipeline/scribe.py` + runner transcribe（真实 CLI，unsafe） | 最小 MVP·真实转写 | ✅ 样本期真实转写成功（$0.13744，与 usage 实扣一致；transcription_id 锚定 + raw 落盘，Episode → transcribed） | NEXT_STEPS·真实转写、flow-test |
+| 词级重组 | 词级 JSON → 一句一条英文 SRT + 说话人前缀 + provenance sidecar | 执行层 `pipeline/wordrender.py` | 最小 MVP·基础架构 | ✅ 真实响应已验：709 条 en.srt + provenance（14061 词零缺失时间戳，S01/S02，产物已登记） | NEXT_STEPS·词级重组新组件 |
+| 翻译与复核 | translate-srt 全流程：体检、知识库、术语表、翻译、复核、重切分、provenance | 执行层 `pipeline/orchestrate.py`（待建）+ `skills/translate-srt/` | 最小 MVP·翻译与复核 | 🟡 上游产物已就绪（709 条英文 SRT + 体检完成），DeepSeek 凭据已就绪；待子代理接入方式实验 + orchestrate.py 编排 | NEXT_STEPS·翻译与复核接通 |
 | 人工审核 | 审核页同步对照、定点修改、问题标注、审批/驳回 | 审核层 `review/` + `eval/` | 审核与交付 | ⬜ | IMPLEMENTATION_PLAN·审核与交付、REQUIREMENTS·人工审核 |
 | 私有交付 | 看点页模板、R2 上传、S3 签名 URL、交付清单 | 交付层 `delivery/` | 审核与交付 | ⬜ | IMPLEMENTATION_PLAN·审核与交付、REQUIREMENTS·看点页/交付 |
 

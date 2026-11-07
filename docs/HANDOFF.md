@@ -28,7 +28,7 @@
 
 - 外层五大阶段：最小 MVP → 自动化主链 → 审核与交付 → 长程与沉淀 → 打磨
 - 最小 MVP 内部五阶段：基础架构 ✅ / 流程测试 ✅ / 真实转写 / 翻译与复核 / 收口与回填
-- 当前进度：基础架构、流程测试、ToolSpec 隔离层已完成并提交；真实转写的准备项已全部就绪——Scribe 幂等键查证（服务端无幂等键）、计费口径结案（PAYG $0.22/h）、模型路由定为 DeepSeek（flash 翻译/调研 + v4-pro 复核，已实测）、样本节目已选定、最小英超知识库 init。下一步进入「真实转写」本体：`pipeline/scribe.py` 实现正在另一会话讨论，本仓暂无未决外部阻塞。
+- 当前进度：基础架构、流程测试、ToolSpec 隔离层已完成并提交；**真实转写阶段已完成**——样本期《Boss with Jamie Carragher: Xabi Alonso》全链路跑通：下载固化（Episode id=1，36MB/2249s）→ 真实 Scribe 转写（一次 POST $0.13744，与 usage 实扣一致）→ 词级重组（709 条 en.srt + provenance）→ 体检（merge 不需要，split 仅 #264）。产物在 `var/episodes/1/`。下一步进入「翻译与复核」：子代理接入方式实验 + skill 全流程编排（DeepSeek 凭据已就绪），本仓无未决外部阻塞。
 
 ### 已完成内容（逐模块）
 
@@ -40,14 +40,14 @@
 | Runner 薄封装 | `runner/src/runner.ts` | 隔离 Pi Durable 实验 API，暴露 submit / resume / continue / checkpoint | 1 | `cd runner && npm test` |
 | ToolSpec 工具契约 | `runner/src/tool-spec.ts` | 工具中立契约（`ToolSpec`）：replay safe/unsafe、execute、extras.memo，业务工具只依赖它 | — | — |
 | pi-durable 适配层 | `runner/src/durable-adapter.ts` | ToolSpec → ToolRegistration 转换；换框架时只重写本文件与 runner.ts | — | — |
-| 单期 conversation | `runner/src/conversation.ts` | download 真实（safe）、transcribe 占位（unsafe）的流水线工具集 | 3 | `cd runner && npm test` |
+| 单期 conversation | `runner/src/conversation.ts` | download 真实（safe）、transcribe 真实（unsafe，经 `python -m pipeline.scribe` 调 CLI）的流水线工具集 | 4 | `cd runner && npm test` |
 | 流程测试 | `runner/src/semantics.test.ts`、`runner/src/kill9.test.ts`、`runner/src/crash-child.ts` | 进程内语义验证 + kill -9 四崩溃点恢复实验 | 6 | `cd runner && npm test` |
 | skill 复用自检 | `docs/verification/translate-srt-reuse.md` | 两脚本 `--self-test` 通过，复用方式定为「经 bash 调子命令，不 import 为库」 | — | 见常用命令 |
 | Python 环境 | `pyproject.toml`、`uv.lock` | uv + Python 3.12 + pytest + httpx + mutagen | — | `uv run pytest tests/` |
 
-- Python 测试合计：24 个全部通过（9 + 5 + 10）
-- Node 测试合计：10 个全部通过（runner 1 + conversation 3 + semantics 2 + kill9 4）
-- 待建文件（已列出但未实现）：`pipeline/scribe.py`（Scribe 客户端，选型已定）、`pipeline/orchestrate.py`（translate-srt 全流程编排）
+- Python 测试合计：60 个全部通过（state 10 + download 5 + wordrender 10 + scribe 35）
+- Node 测试合计：11 个全部通过（runner 1 + conversation 4 + semantics 2 + kill9 4）
+- 待建文件（已列出但未实现）：`pipeline/orchestrate.py`（translate-srt 全流程编排）
 
 ### ToolSpec 工具契约隔离层（已提交 d1438bd）
 
@@ -162,7 +162,7 @@
 - 先 `git log --oneline` + `git status` 实际读取状态：本会话改动全部未提交（待用户审阅），审阅批准后才提交。
 - 计费已核对（日账单）；如需最终归属确认：Request Log 逐请求导出 + 核对账号套餐费率（实测有效单价 ≈ $0.40/h，与文档 $0.22/h 不一致）。
 - 待用户确认需求修订提案（幂等键不成立），改 `docs/REQUIREMENTS.md`。
-- 然后推进「真实转写」：`pipeline/scribe.py`（用 `POST /v1/speech-to-text`，落盘 `transcription_id` + 原始响应，实现正在另一会话讨论）与词级重组接真实响应；外部前置（key、计费口径、样本）已全部就绪。
+- 然后推进「翻译与复核」：真实转写已完成，英文 SRT（709 条）就绪；做子代理接入方式实验（崩溃恢复、成本归属、产物落盘与账本衔接）+ `pipeline/orchestrate.py` skill 全流程编排，speakers 真名映射（S01→Carragher、S02→Alonso）在 skill 的 speakers 步骤落实。
 
 ## 接手常用命令
 
