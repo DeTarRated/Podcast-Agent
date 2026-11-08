@@ -105,6 +105,6 @@
 
 ## 待验证事项
 
-- 子代理（翻译/复核）在 Pi Durable 中的接入方式（扩展任务、嵌套任务或独立 conversation）
+- 子代理（翻译/复核）在 Pi Durable 中的接入方式：**已定为嵌套任务**（2026-11 实验验证）——经 ToolSpec `extras.dispatch` 创建子任务并等待；跨调用去重用 scanTasks + callRef（memo 不跨工具调用）；成本随 result 回传进账本；子任务失败即终态不自动重跑（符合付费红线）。实验记录见 `docs/verification/subagent-dispatch.md`
 - fork / steer 在本项目中的实际用法
 - Durable 能力边界：已由流程测试验证（checkpoint、transcript 持久化、safe 重跑、unsafe 不重跑、restartLimit 熔断、memo），结论与复现入口见 `docs/verification/flow-test.md`；Runner 仍需补齐的边界（真实付费调用对账闭环、产物清单联动）同见该文档
