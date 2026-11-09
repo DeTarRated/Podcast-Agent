@@ -6,7 +6,13 @@
 
 ## 与既有交接文档的关系
 
-- 本文档是实施现状交接，新会话以本文档为准。
+- 最新状态补充：最小 MVP 已完成，完成证据见 `docs/MVP_HANDOFF.md`；当前进入「审核与私人播客库 MVP」，总体图纸为 `.agent/tmp/review-library-mvp-execution.md`，代码实现规格为 `.agent/tmp/review-library-mvp-implementation-spec.md`。
+- 当前权威口径为审核箱 12 小时人工干预窗口、到期 `auto_timeout` 自动审批、私人播客库、发布后修订及评测后置；以 `docs/REQUIREMENTS.md`、`docs/ARCHITECTURE.md` 与 `docs/IMPLEMENTATION_PLAN.md` 为准。
+- 真实 R2 验收（2026-11）：使用临时数据库与工作区，实际上传样本音频、字幕和测试看点三个对象，HEAD 元数据全部通过；音频 Range 206、字幕与看点下载 200、未签名请求 400、过期签名 403。真实 Episode 未修改，模型调用为零；测试对象保留在私有 `podcast` 桶。
+- 真实样本完整演示（2026-11）：先备份真实数据库至 `var/backups/podcast_agent_before_demo_20261109T092309Z.db`，随后真实审批 → 一次 highlights 模型调用 → R2 发布 → 本地节目库验证通过，当前 Episode 为 delivered，节目库展示 898 条字幕。模型用量 `input=27287 / output=434`，记录成本约 `$0.03773748`；原结果回写窗口留下 unknown，已凭既有子任务结果核销，未重复调用。模型落在字幕间隙的时间点按最近字幕起点对齐，超过 3 秒才拒绝。手写测试看点已备份到 `var/backups/highlights-demo-20261109T092506Z/`。
+- 完整演示中修复：`review_dispatch` 工具名改为 DeepSeek 接受的合法函数名；`delivery.cli` 启动时加载 `.env`；看点 R2 key 增加 HTML 内容 hash，避免同字幕不同看点互相覆盖。演示密码不写入文档。
+- 只读「用量与费用」页已接入现有导航，支持汇总、节目／用途／状态／供应商筛选、明细和异常展示；实际账本联调返回 5 次调用、估算合计 `$0.42123`、无 intent／unknown／未定价记录。R2 费用未混入，保留 Cloudflare 控制台入口。
+- 本文后续章节保留最小 MVP 建设过程与既有实验索引；其中「真实转写待做」「翻译与复核待做」「人工审批才交付」等旧阶段描述不再作为当前任务。
 
 ## 阅读顺序
 

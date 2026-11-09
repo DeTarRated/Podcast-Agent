@@ -20,18 +20,16 @@
 | 执行层·骨架 | Pi Durable + 自研 Runner；流水线工具经 bash 调 Python | ARCHITECTURE |
 | 执行层·转写 | ElevenLabs Scribe v2（说话人分离 + 词级时间戳）；Scribe 词级 JSON 重组为一句一条英文 SRT 是项目侧新组件，不在 translate-srt 脚本内 | REQUIREMENTS / IMPLEMENTATION_PLAN |
 | 执行层·翻译 | translate-srt skill 全套流程（srt_tools.py / kb_tools.py、子代理角色定义复用） | REQUIREMENTS / IMPLEMENTATION_PLAN |
-| 审核层 | 静态审核页 + Node 审批服务 + override 表 + 评测集（自研） | ARCHITECTURE |
-| 交付层 | 模板生成 + boto3 上传 R2 + S3 签名 URL（自研）；使用 Cloudflare R2，不用 WebDAV | ARCHITECTURE / REQUIREMENTS |
+| 审核层 | 静态审核箱与审核页 + Fastify HTTP 适配 + Python 审核领域与 SQLite 事务 + 12 小时超时自动审批 + override 表；评测后置 | ARCHITECTURE / REQUIREMENTS / 代码实现规格 |
+| 交付层 | 私人播客库 + 模板生成 + boto3 上传 R2 + 动态 S3 签名 URL（自研）；使用 Cloudflare R2，不用 WebDAV | ARCHITECTURE / REQUIREMENTS |
 | 知识库 | 纯文本 + 独立 git 仓库，kb_tools.py 读写，项目代码之外 | REQUIREMENTS / skill |
-| 流程状态存储 | SQLite 存程序读写数据（Episode、override、账本、评测集等），知识库不存流程状态 | 讨论结论（待回填需求） |
-
-末行「流程状态存储」为讨论结论（出处 `.agent/knowledge-base.md`），不属权威已定，待回填需求数据模型。
+| 流程状态存储 | SQLite 存程序读写数据（Episode、override、审批、发布、账本等），知识库不存流程状态；评测数据后续加入 | REQUIREMENTS / ARCHITECTURE |
 
 ## 语言与运行时（草案）
 
 - Python：发现、流水线工具、Runner 周边脚本。版本与依赖管理在最小 MVP 定稿；依赖清单与锁文件进仓库，凭据不入库。
-- Node：审批服务。版本与框架见「库与框架候选」。
-- 运行时约束：VPS 单机；无任务时除 cron 外无常驻进程，执行层按需唤醒、空闲退出。
+- Node：Fastify v5 审批 HTTP 适配、静态页与本地音频流；Python 经窄 CLI 统一执行审核与交付领域事务，Node 不直接连接 SQLite。
+- 运行时约束：VPS 单机；无任务时除 cron 外无常驻进程，执行层按需唤醒、空闲退出；超时审批与交付也由定时扫描触发。
 - 凭据与环境变量：Scribe API key、模型凭据、R2 密钥（最小权限）、分类 LLM 凭据，统一走环境变量或受限配置文件，日志与仓库不出现密钥。
 
 ## 库与框架候选（待选）
@@ -42,9 +40,9 @@
 | HTTP 客户端（Lookup、下载） | requests / httpx | 待选 | 最小 MVP（下载工具） |
 | 转写客户端 | ~~ElevenLabs 官方 SDK / 直接 HTTP~~ 已定：直接 HTTP（httpx） | 已定 | 已完成（最小 MVP·基础架构） |
 | 分类 LLM 客户端 | 按所选便宜模型供应商 SDK | 待选 | 自动化主链 |
-| Node 审批服务框架 | Express / Fastify | 待选 | 审核与交付 |
-| 审核页前端 | 静态 HTML + JS，原生或轻量框架 | 待选 | 审核与交付 |
-| SQLite 驱动 | Python stdlib sqlite3 / SQLAlchemy；Node 侧按所选框架配套 | 待选 | 自动化主链 |
+| Node 审批服务框架 | ~~Express / Fastify~~ 已定：Fastify v5 | 已定 | 审核与私人播客库 MVP |
+| 审核页前端 | 已定：静态 HTML + 原生 JavaScript，无构建步骤 | 已定 | 审核与私人播客库 MVP |
+| SQLite 驱动 | 已定：Python stdlib sqlite3 统一领域事务；Node 经窄 CLI，不直接连接 | 已定 | 审核与私人播客库 MVP |
 | 测试框架 | pytest / 内置 unittest | 待选 | 最小 MVP |
 | Python 依赖与虚拟环境 | uv / pip + venv | 待选 | 最小 MVP |
 
@@ -55,11 +53,13 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 | 数据 | 关键字段 | 来源 |
 | --- | --- | --- |
 | feed 配置 | 名称、feedUrl、所属节目、ETag、Last-Modified、启用状态 | REQUIREMENTS / ARCHITECTURE |
-| Episode | guid、feed、feed 快照、标题、发布时间、时长、enclosure、音频 hash、状态、产物清单引用、熔断计数、审批通知 memo | REQUIREMENTS 数据模型 + IMPLEMENTATION_PLAN 补充（feed 快照需回填需求）；熔断计数、审批通知 memo 为本草案新增（依据 ARCHITECTURE 熔断/memo 机制），待自动化主链与状态机一起评审定稿 |
+| Episode | guid、feed、feed 快照、标题、发布时间、时长、enclosure、音频 hash、状态、产物清单引用、当前待审版本、auto_approve_at、自动审批暂停标记、熔断计数、审批通知 memo | REQUIREMENTS 数据模型 + IMPLEMENTATION_PLAN 补充；审核字段在审核与播客库 MVP 落迁移 |
 | 产物清单 | 路径、版本、校验、生成步骤、状态 | IMPLEMENTATION_PLAN |
-| override | 源句／时间范围、版本、修改前后文本、修订号、冲突标记 | IMPLEMENTATION_PLAN（唯一映射契约在审核与交付定稿） |
+| override | 源稿版本、开始／结束时间、原文 hash、被修改产物版本、修改前后文本、请求幂等键、创建时间；历史追加保留 | REQUIREMENTS / IMPLEMENTATION_PLAN；SRT 条目号不作稳定主键 |
+| 审批记录 | 最终产物版本、SHA256、manual / auto_timeout、审批时间、请求标识 | REQUIREMENTS / ARCHITECTURE |
+| 发布记录 | 当前上线版本、交付对象与校验信息、发布时间；修订时保留旧版直至新版完整交付 | REQUIREMENTS / ARCHITECTURE |
 | 账本 | 所属期数、用途、触发时间、模型／服务、用量依据、金额估算、调用标识、结果状态 | IMPLEMENTATION_PLAN（schema 归执行层，发现层分类跨层写入） |
-| 评测集 | 原文、模型版本、修改前后文本、时间范围、问题类别；唯一键 = 源句 + 时间范围 + 修改前后文本 hash | IMPLEMENTATION_PLAN |
+| 评测集 | 后续阶段建设；可从 override 历史补建样本，不把抽检未修改条目视为正确 | IMPLEMENTATION_PLAN |
 | 幂等与对账 | 转写幂等键 = guid + 音频 hash；intent／outcome 记录支撑 unsafe 调用恢复 | REQUIREMENTS / IMPLEMENTATION_PLAN |
 
 ## 目录与部署拓扑（草案）
@@ -75,10 +75,10 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 | `discover/` | 发现层（调度模块） | feed 配置、轮询、分类、入队 |
 | `runner/` | 执行层（Agent 执行模块） | Pi Durable 集成、Runner 接口、checkpoint、工具封装 |
 | `pipeline/` | 执行层（Agent 执行模块） | 下载固化、词级重组、转写、翻译工作区编排（调用 translate-srt） |
-| `state/` | 跨层数据契约（schema 归执行层维护） | schema、迁移、查询入口；Episode / 产物清单 / 账本 / override / 评测集 |
-| `review/` | 审核层（审核与评测模块） | 静态审核页、审批服务、override |
-| `eval/` | 审核层（审核与评测模块） | 评测样本与指标脚本 |
-| `delivery/` | 交付层（交付模块） | 看点页模板、R2 上传、签名 URL |
+| `state/` | 跨层数据契约（schema 归执行层维护） | schema、迁移、查询入口；Episode / 产物清单 / 账本 / override / 审批 / 发布记录 |
+| `review/` | 审核层（审核模块） | Fastify HTTP 适配、Python 审核领域与 CLI、审核箱、静态页、超时自动审批、override |
+| `eval/` | 审核层（后续评测模块） | 本轮不实现；后续评测样本与指标脚本 |
+| `delivery/` | 交付层（私人播客库与交付模块） | 节目库与播放页、看点模板、R2 上传、动态签名 URL、发布指针 |
 | `tests/` | — | 各层模块测试 |
 
 层间边界（接口归属）：发现层 → 执行层 = Episode 记录与入队；执行层 ↔ 审核层 = 本地待审核产物目录 + 驳回原因与重跑范围；审核层 → 交付层 = 已批准版本；执行层 → 交付层 = approved 产物。发现层分类的付费调用经执行层维护的账本 schema 跨层写入。
@@ -89,8 +89,10 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 
 - VPS 单机；cron 每 15 分钟触发 discover，条件请求 304 时零后续动作。
 - 执行进程按需启动：存在待处理期才运行，队列清空即退出；审核等待不占用模型会话运行。
-- 审核页与审批服务按需启动，审核期直接读本地产物；R2 仅在批准后上传。
-- R2 私有桶 + 预签名 URL；备份目的地独立于工作数据。
+- 审核页与审批服务按需启动，审核期直接读本地产物；人工或 12 小时超时审批后才上传 R2。
+- 自动审批与交付由 cron 扫描到期或待交付记录，不启动常驻 worker；自动审批使用短事务校验版本，R2 上传不包在数据库事务中。
+- 私人播客库使用稳定私有节目地址；R2 私有桶 + 动态预签名 URL，过期重新签发，备份目的地独立于工作数据。
+- 发布后修订期间发布指针继续指向旧版，新版上传与校验完整后才切换。
 - 知识库为独立 git 仓库，不随本仓库公开提交。
 - 审核入口、续签入口等按需启动方式待目标 VPS 环境实测（打磨阶段部署验收）。
 
@@ -106,9 +108,11 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 
 | 决策 | 候选 | 结论 | 依据 | 状态 |
 | --- | --- | --- | --- | --- |
-| 流程状态存储 | SQLite / 文本知识库 | 双存储分工 | 程序读写数据用 SQLite；知识库保持文本可读、可 git diff | 讨论结论（待回填需求） |
+| 流程状态存储 | SQLite / 文本知识库 | 双存储分工 | 程序读写数据用 SQLite；知识库保持文本可读、可 git diff | 已定（已回填 REQUIREMENTS） |
 | 词级重组组件 | 自研 / 复用上游 render 类脚本 | 待定 | 「项目侧新组件」为已定事实（计划已标注），自研 / 复用上游 render 脚本的选择属待验证 | 待验证 |
 | 转写客户端 | ElevenLabs 官方 SDK / 直接 HTTP | 直接 HTTP（httpx） | 本项目仅用 Scribe 一小面（现行文档端点 `POST /v1/speech-to-text` + `GET /v1/speech-to-text/transcripts/{id}`，见幂等键查证；无幂等键可用），REST 与 SDK 均可获取 word 级时间戳与说话人分离；直接 HTTP 便于原始响应落盘、复用已定 httpx，避免大而全 SDK 的版本 churn 与无关升级牵连 | 已定 |
+| 审核服务接缝 | Node 直写 SQLite / Fastify + Python 领域 CLI | Fastify v5 + Python stdlib sqlite3 | 审核、override、审批与发布事务只在 Python 实现一次；Node 负责 HTTP、鉴权、静态页与音频流，避免原生 SQLite 依赖和双份状态机；Fastify v5 完整 JSON Schema 与 hooks 文档已经 Context7 核对 | 已定 |
+| R2 客户端 | boto3 S3 兼容 API | boto3（当前锁文件版本） | put_object 流式 Body、HEAD ContentLength + sha256 metadata、get_object 预签名；使用内容寻址 key，HEAD 不一致拒绝覆盖；API 用法已经 Context7 核对，真实 R2 联调单独验收 | 已定 |
 | 其余待选库 | 见候选表 | 未定 | 分别在标注的决策时机完成 | 待选 |
 
 待选与待验证项在对应阶段决策后补录进本表，含结论与依据。
