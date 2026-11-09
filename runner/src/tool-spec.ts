@@ -22,14 +22,14 @@ export interface ToolExtras {
   memo?: (name: string, candidate: JsonValue) => Promise<JsonValue>;
   /** 派发子代理（嵌套任务）；同 callRef 去重。框架不提供时为 undefined。 */
   dispatch?: (input: {
-    role: "translate" | "review" | "research";
+    role: "translate" | "review" | "research" | "highlights";
     inputPath: string;
     outputPath: string;
     callRef: string;
     /** 账本元数据：Episode id、provider、model；缺省则不写账本（实验/测试场景） */
     ledger?: {
       episodeId: number;
-      purpose: "translate" | "review" | "research";
+      purpose: "translate" | "review" | "research" | "highlights";
       provider: string;
       model: string;
       dbPath?: string;

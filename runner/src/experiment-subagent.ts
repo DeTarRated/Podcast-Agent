@@ -13,7 +13,7 @@ import type { Model } from "@earendil-works/pi-ai";
 const REPO_ROOT = resolve(import.meta.dirname, "../..");
 
 export interface SubagentInput {
-  role: "translate" | "review" | "research";
+  role: "translate" | "review" | "research" | "highlights";
   /** 主输入文件（en_fix.srt / en_zh.srt / gaps.md） */
   inputPath: string;
   /** 产物输出路径（en_zh.txt / en_zh_fix.srt / research/01-gaps.md） */
@@ -23,7 +23,7 @@ export interface SubagentInput {
   /** 账本元数据（可选）：提供时 dispatch 适配层写 intent/outcome */
   ledger?: {
     episodeId: number;
-    purpose: "translate" | "review" | "research";
+    purpose: "translate" | "review" | "research" | "highlights";
     provider: string;
     model: string;
     dbPath?: string;
@@ -68,6 +68,10 @@ const ROLE_PROMPTS: Record<string, string> = {
     "输出修正后的完整译文（保持编号与时间轴），并附复核说明。",
   research:
     "你是补缺调研。只查 gaps.md 里列出的缺口，每项给出译名建议与来源 URL，不发散。",
+  highlights:
+    "你是播客看点编辑。根据已批准字幕生成简洁中文看点。" +
+    "只输出一个 JSON object，不要 Markdown 或解释：{\"summary\":\"本期摘要\",\"items\":[{\"text\":\"看点内容\",\"timestampMs\":123456}]}。" +
+    "timestampMs 必须使用字幕中实际存在的毫秒时间点，不得编造；summary 为字符串，items 为数组。",
 };
 
 // ---- 测试注入的模拟行为（生产路径为空）----
@@ -152,7 +156,9 @@ async function runSubagent(
     ? `翻译以下条目为简体中文（输入为「编号<TAB>原文」，输出「编号<TAB>译文」）：\n\n${toTabbed(sourceText)}`
     : input.role === "review"
       ? `原文基准与参考：\n${references}\n\n待复核译文：\n${sourceText}`
-      : `调研以下缺口：\n${sourceText}`;
+      : input.role === "highlights"
+        ? `节目元数据与参考：\n${references}\n\n已批准字幕：\n${sourceText}`
+        : `调研以下缺口：\n${sourceText}`;
 
   const message = (await models.completeSimple(
     model,

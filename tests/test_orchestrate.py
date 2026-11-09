@@ -5,7 +5,7 @@
 - fix：说话人映射 + 别名替换 → 人工修正点保护（phase=transcript_manual_review 重跑只返回待办、不动 en_fix）
 - fix --manual-done：split/normalize + remap-log，输出翻译 dispatch 参数
 - apply：账本 success 闸门（缺失/intent/failed/unknown 拒绝），译文贴回时间轴，推进 translated
-- finalize：复核账本闸门 + clean/check/resplit/provenance，推进 reviewing
+- finalize：复核账本闸门 + clean/check/resplit/provenance，推进 reviewing 并创建当前审核修订
 - 端到端：prepare → 主代理上下文 → fix → 人工修正 → fix --manual-done → seed 翻译账本 → apply → seed 复核账本 → finalize → reviewing
 """
 import json
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from state import db, episode, ledger, manifest
+from state import db, episode, ledger, manifest, review_state
 from pipeline import orchestrate
 from pipeline.download import sha256_file
 
@@ -236,6 +236,11 @@ def test_finalize_success_advances_to_reviewing(conn, ws, monkeypatch):
     assert result["status"] == "success"
     assert result["phase"] == "reviewing"
     assert episode.get(conn, ep_id)["status"] == "reviewing"
+    current = review_state.current_for(conn, ep_id)
+    assert current["status"] == "reviewing"
+    assert current["variant"] == "split"
+    assert current["auto_approve_paused"] == 0
+    assert current["auto_approve_at"] is not None
     assert (ws / "en_zh_split.srt").exists()
     assert (ws / "_context" / "logs" / "provenance.fix.txt").exists()
 

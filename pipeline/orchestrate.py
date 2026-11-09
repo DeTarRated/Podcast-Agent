@@ -22,12 +22,13 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 from pipeline.download import sha256_file
 from pipeline.scribe import _load_dotenv
-from state import db, episode, ledger, manifest
+from state import db, episode, ledger, manifest, review_state
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRT_TOOLS = REPO_ROOT / "skills/translate-srt/scripts/srt_tools.py"
@@ -98,18 +99,19 @@ def _run_skill(script: Path, args: list[str], log_path: Path) -> subprocess.Comp
     return proc
 
 
-def _register(conn, episode_id: int, step: str, kind: str, path: Path, version: int = 1) -> None:
-    """登记产物为 done + sha256；同 step+path+version 且 hash 相同则跳过。"""
+def _register(conn, episode_id: int, step: str, kind: str, path: Path, version: int = 1) -> int:
+    """登记产物为 done + sha256；同 step+path+version 复用并返回 artifact id。"""
     sha = sha256_file(path)
     rel = str(path)
     for art in manifest.list_for(conn, episode_id):
         if art["step"] == step and art["path"] == rel and art["version"] == version:
             if art["status"] != "done" or art["sha256"] != sha:
                 manifest.finish(conn, art["id"], sha256=sha)
-            return
+            return int(art["id"])
     art_id = manifest.add(conn, episode_id=episode_id, step=step, kind=kind,
                           path=rel, version=version, sha256=sha)
     manifest.finish(conn, art_id, sha256=sha)
+    return int(art_id)
 
 
 def _result(command: str, episode_id: int, ws: Path, *, phase: str,
@@ -488,11 +490,32 @@ def cmd_finalize(conn, episode_id: int, ws: Path) -> dict:
         if pv.returncode != 0:
             raise OrchestrateError(f"provenance 越界: {name}")
 
-    _register(conn, episode_id, "review", "srt", ws / "en_zh_fix.srt")
+    review_artifact_id = _register(conn, episode_id, "review", "srt", ws / "en_zh_fix.srt")
     _register(conn, episode_id, "review_notes", "md", _ctx(ws) / "review_notes.md")
-    _register(conn, episode_id, "split", "srt", ws / "en_zh_split.srt")
+    split_artifact_id = _register(conn, episode_id, "split", "srt", ws / "en_zh_split.srt")
 
-    episode.update_status(conn, episode_id, "reviewing")
+    # 执行层只写共享审核数据契约；审批与后续 override 归 review 领域。
+    variant = os.environ.get("PODCAST_REVIEW_VARIANT", "split")
+    if variant not in ("review", "split"):
+        raise OrchestrateError("PODCAST_REVIEW_VARIANT 必须为 review 或 split")
+    reviewing_since = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        hours = float(os.environ.get("PODCAST_REVIEW_AUTO_APPROVE_HOURS", "12"))
+    except ValueError as exc:
+        raise OrchestrateError("自动审批小时配置无效") from exc
+    if hours <= 0:
+        raise OrchestrateError("自动审批小时配置必须为正数")
+    auto_at = (datetime.fromisoformat(reviewing_since) + timedelta(hours=hours)).isoformat(timespec="seconds")
+    review_state.create_current_revision(
+        conn,
+        episode_id=episode_id,
+        base_artifact_id=split_artifact_id if variant == "split" else review_artifact_id,
+        rendered_artifact_id=split_artifact_id if variant == "split" else review_artifact_id,
+        variant=variant,
+        reviewing_since=reviewing_since,
+        auto_approve_at=auto_at,
+        auto_approve_paused=False,
+    )
     state["phase"] = "reviewing"
     _save_state(ws, state)
 
