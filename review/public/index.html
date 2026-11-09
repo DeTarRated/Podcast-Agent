@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>播客审核箱</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/player.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <nav class="nav" aria-label="主导航">
+      <a class="brand" href="#/review">审核箱</a>
+      <a class="nav-link" href="#/library">节目库</a>
+      <a class="nav-link" href="#/usage">用量与费用</a>
+    </nav>
+    <span class="privacy">私人工作区</span>
+  </header>
+  <main>
+    <div id="notice" class="notice" hidden></div>
+    <div id="app" aria-live="polite"><p class="muted">正在加载…</p></div>
+  </main>
+  <footer id="playback-dock" class="playback-dock" hidden>
+    <div class="playback-copy">
+      <span class="playback-label">正在播放</span>
+      <strong id="playback-title">未选择节目</strong>
+    </div>
+    <audio id="playback-audio" controls preload="metadata"></audio>
+    <button id="playback-close" class="playback-close" type="button" aria-label="关闭播放栏">×</button>
+  </footer>
+</body>
+</html>

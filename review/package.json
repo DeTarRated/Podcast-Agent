@@ -1,0 +1,22 @@
+{
+  "name": "podcast-agent-review",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "审核层·Fastify HTTP 适配、静态审核页与本地音频流",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/server.ts",
+    "test": "node --test src/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "fastify": "5.12.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}
