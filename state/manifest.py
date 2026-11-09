@@ -12,6 +12,7 @@ def add(
     path: str,
     version: int = 1,
     sha256: Optional[str] = None,
+    commit: bool = True,
 ) -> int:
     cur = conn.execute(
         """
@@ -20,7 +21,8 @@ def add(
         """,
         (episode_id, step, kind, path, version, sha256),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return int(cur.lastrowid)
 
 
@@ -36,8 +38,9 @@ def finish(
     artifact_id: int,
     *,
     sha256: Optional[str] = None,
+    commit: bool = True,
 ) -> None:
-    """标记产物完成，可顺带补校验值。"""
+    """标记产物完成；领域事务传 commit=False，由调用方统一提交。"""
     if sha256 is None:
         conn.execute(
             "UPDATE artifact SET status = 'done' WHERE id = ?", (artifact_id,)
@@ -47,7 +50,8 @@ def finish(
             "UPDATE artifact SET status = 'done', sha256 = ? WHERE id = ?",
             (sha256, artifact_id),
         )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def mark_failed(conn: sqlite3.Connection, artifact_id: int) -> None:

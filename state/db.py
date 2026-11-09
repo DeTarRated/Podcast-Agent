@@ -1,14 +1,10 @@
-"""SQLite 连接与 schema 管理。
+"""SQLite 连接与版本化 schema 管理。
 
-垂直切片采用 stdlib sqlite3 最小封装；SQLite 驱动正式选型
-（stdlib sqlite3 / SQLAlchemy）按 TECH_STACK 排在自动化主链定稿。
+采用 stdlib sqlite3；新库创建最新契约，受支持旧库经 migrations 安全升级。
 """
 import os
 import sqlite3
 from pathlib import Path
-
-SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-
 
 def connect(path: str | os.PathLike) -> sqlite3.Connection:
     """打开连接并应用本项目约定：WAL、外键开启、锁等待。"""
@@ -21,9 +17,10 @@ def connect(path: str | os.PathLike) -> sqlite3.Connection:
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
-    """幂等建表（IF NOT EXISTS）。"""
-    conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
-    conn.commit()
+    """创建最新 schema 或迁移受支持旧库；重复调用无副作用。"""
+    from state.migrations import migrate
+
+    migrate(conn)
 
 
 def default_db_path() -> str:

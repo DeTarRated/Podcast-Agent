@@ -43,13 +43,20 @@ def get_by_guid_feed(conn: sqlite3.Connection, guid: str, feed: str) -> Optional
     ).fetchone()
 
 
-def update_status(conn: sqlite3.Connection, episode_id: int, status: str) -> None:
-    """状态推进；非法状态由 CHECK 约束拒绝。"""
+def update_status(
+    conn: sqlite3.Connection,
+    episode_id: int,
+    status: str,
+    *,
+    commit: bool = True,
+) -> None:
+    """状态推进；领域事务传 commit=False，由调用方统一提交。"""
     conn.execute(
         "UPDATE episode SET status = ?, updated_at = ? WHERE id = ?",
         (status, utcnow_iso(), episode_id),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def set_audio(
