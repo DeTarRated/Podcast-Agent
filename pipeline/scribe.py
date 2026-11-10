@@ -55,8 +55,15 @@ class ScribeResult:
     error: Optional[str] = None
 
 
-def build_call_ref(guid: str, audio_sha256: str) -> str:
-    return f"transcribe:{guid}:{audio_sha256}"
+def build_call_ref(
+    guid: str, audio_sha256: str, rebill_attempt: Optional[int] = None
+) -> str:
+    base = f"transcribe:{guid}:{audio_sha256}"
+    if rebill_attempt is not None:
+        if not isinstance(rebill_attempt, int) or rebill_attempt < 2:
+            raise ScribeError("rebill_attempt 必须从 2 开始")
+        base += f":rebill:{rebill_attempt}"
+    return base
 
 
 def read_timeout_for(duration_secs: float) -> float:
@@ -179,8 +186,9 @@ def transcribe(
     workspace: Path,
     transport: Optional[httpx.BaseTransport] = None,
     trust_env: bool = True,
+    rebill_attempt: Optional[int] = None,
 ) -> ScribeResult:
-    """同步转写一期音频；每次调用最多一次付费 POST。"""
+    """同步转写一期音频；rebill 仅允许从既有 unknown 显式新建付费尝试。"""
     audio_path = Path(audio_path)
     workspace = Path(workspace)
     ep = episode.get(conn, episode_id)
@@ -196,7 +204,14 @@ def transcribe(
     actual_hash = sha256_file(audio_path)
     if actual_hash != ep["audio_sha256"]:
         raise ScribeError("音频 hash 与首版固化不一致，拒绝付费调用")
-    call_ref = build_call_ref(ep["guid"], actual_hash)
+    base_call_ref = build_call_ref(ep["guid"], actual_hash)
+    if rebill_attempt is not None:
+        base = ledger.get_by_ref(conn, base_call_ref)
+        if base is None or base["status"] != "unknown":
+            raise ScribeError("显式 re-bill 要求原转写账本为 unknown")
+        call_ref = build_call_ref(ep["guid"], actual_hash, rebill_attempt)
+    else:
+        call_ref = base_call_ref
 
     # duplicate 闸门先于状态检查：已成功（transcribed）的重复调用返回 duplicate 而非状态报错
     existing = ledger.get_by_ref(conn, call_ref)
@@ -350,6 +365,7 @@ def fetch_transcript(
     workspace: Path,
     transport: Optional[httpx.BaseTransport] = None,
     trust_env: bool = True,
+    call_ref_override: Optional[str] = None,
 ) -> ScribeResult:
     """凭 transcription_id 恢复结果；本地完整时零 HTTP，否则单次免费 GET。"""
     tid = transcription_id.strip()
@@ -361,7 +377,7 @@ def fetch_transcript(
         raise ScribeError(f"Episode 不存在: {episode_id}")
     if not ep["audio_sha256"]:
         raise ScribeError("Episode 缺 audio_sha256，无法关联账本")
-    call_ref = build_call_ref(ep["guid"], ep["audio_sha256"])
+    call_ref = call_ref_override or build_call_ref(ep["guid"], ep["audio_sha256"])
     row = ledger.get_by_ref(conn, call_ref)
     if row is None:
         raise ScribeError("找不到对应转写账本记录，拒绝认领外部 ID")
@@ -441,9 +457,12 @@ def main(argv=None) -> int:
     p_trans = sub.add_parser("transcribe")
     p_trans.add_argument("episode_id", type=int)
     p_trans.add_argument("audio")
+    p_trans.add_argument("--rebill-attempt", type=int)
+    p_trans.add_argument("--direct", action="store_true", help="显式 re-bill 时绕过系统代理")
     p_fetch = sub.add_parser("fetch")
     p_fetch.add_argument("episode_id", type=int)
     p_fetch.add_argument("transcription_id")
+    p_fetch.add_argument("--call-ref")
     p_unknown = sub.add_parser("mark-unknown")
     p_unknown.add_argument("episode_id", type=int)
     for p in (p_trans, p_fetch, p_unknown):
@@ -459,11 +478,16 @@ def main(argv=None) -> int:
         conn = db.open_default()
     try:
         if args.command == "transcribe":
-            result = transcribe(conn, episode_id=args.episode_id,
-                                audio_path=Path(args.audio), workspace=workspace)
+            result = transcribe(
+                conn, episode_id=args.episode_id, audio_path=Path(args.audio),
+                workspace=workspace, trust_env=not args.direct,
+                rebill_attempt=args.rebill_attempt,
+            )
         elif args.command == "fetch":
-            result = fetch_transcript(conn, episode_id=args.episode_id,
-                                      transcription_id=args.transcription_id, workspace=workspace)
+            result = fetch_transcript(
+                conn, episode_id=args.episode_id, transcription_id=args.transcription_id,
+                workspace=workspace, call_ref_override=args.call_ref,
+            )
         else:
             result = mark_unknown(conn, episode_id=args.episode_id, workspace=workspace)
     except ScribeError as exc:

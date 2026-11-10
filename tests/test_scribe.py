@@ -16,6 +16,7 @@
 - failed 账本与外部 ID 并存：返回冲突不自动翻转
 - .env 窄格式解析、显式环境优先、缺 key 零 intent
 - read timeout 时长公式与 CLI 单行 JSON / 退出码
+- 显式 re-bill：仅 unknown 可创建新尝试，旧 unknown 保留，新尝试成功，重复 attempt 不重发
 """
 import json
 import sqlite3
@@ -516,6 +517,45 @@ def test_read_timeout_formula():
         scribe.read_timeout_for(0)
     with pytest.raises(scribe.ScribeError):
         scribe.read_timeout_for(float("nan"))
+
+
+def test_rebill_from_unknown_creates_separate_success_attempt(conn, audio, workspace):
+    ep_id = make_episode(conn, audio)
+    seed_intent(conn, ep_id)
+    base_ref = call_ref_for(conn, ep_id)
+    ledger.record_outcome(conn, base_ref, status="unknown")
+    calls = []
+    result = scribe.transcribe(
+        conn, episode_id=ep_id, audio_path=audio, workspace=workspace,
+        transport=mock_transport(calls, lambda req: json_response(ok_payload("tid-rebill"))),
+        trust_env=False, rebill_attempt=2,
+    )
+    assert result.status == "success"
+    ep = episode.get(conn, ep_id)
+    rebill_ref = scribe.build_call_ref(ep["guid"], ep["audio_sha256"], 2)
+    assert result.call_ref == rebill_ref
+    assert ledger.get_by_ref(conn, base_ref)["status"] == "unknown"
+    assert ledger.get_by_ref(conn, rebill_ref)["status"] == "success"
+    assert len(calls) == 1
+    repeated = scribe.transcribe(
+        conn, episode_id=ep_id, audio_path=audio, workspace=workspace,
+        transport=mock_transport(calls, lambda req: json_response(ok_payload("tid-rebill"))),
+        trust_env=False, rebill_attempt=2,
+    )
+    assert repeated.status == "duplicate"
+    assert len(calls) == 1
+
+
+def test_rebill_requires_existing_unknown(conn, audio, workspace):
+    ep_id = make_episode(conn, audio)
+    calls = []
+    with pytest.raises(scribe.ScribeError, match="要求原转写账本为 unknown"):
+        scribe.transcribe(
+            conn, episode_id=ep_id, audio_path=audio, workspace=workspace,
+            transport=mock_transport(calls, lambda req: json_response(ok_payload())),
+            trust_env=False, rebill_attempt=2,
+        )
+    assert calls == []
 
 
 def test_cli_json_and_exit_code(tmp_path, monkeypatch, capsys):
