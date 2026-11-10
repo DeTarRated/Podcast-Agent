@@ -19,7 +19,7 @@
 
 | 环节 | 职责 | 归属分层与目录 | 所处阶段 | 当前状态 | 验收归属文档 |
 | --- | --- | --- | --- | --- | --- |
-| 发现播客 | cron 轮询 + ETag/304 + guid 去重 + 分类过滤，新期入队 | 发现层 `discover/` | 自动化主链 | ⬜ | REQUIREMENTS·节目源管理/增量发现、IMPLEMENTATION_PLAN·自动化主链 |
+| 发现播客 | cron 轮询 + ETag/304 + guid 去重 + 历史基线 + 分类过滤，新期入队 | 发现层 `discover/` + 执行层 `runner/` | 自动化主链 | ✅ 新 Episode 2 真实分类→下载→转写→翻译→复核→看点→R2→节目库验收通过；cron/VPS 留部署阶段 | REQUIREMENTS·节目源管理/增量发现、IMPLEMENTATION_PLAN·自动化主链 |
 | 下载 | 跟随 302 下载 mp3，sha256/大小/时长固化，首版保护，重试 | 执行层 `pipeline/download.py` | 最小 MVP·基础架构 | ✅ | NEXT_STEPS·最小下载工具 |
 | 转写 | Scribe v2 说话人分离 + 词级时间戳，原始响应落盘 | 执行层 `pipeline/scribe.py` + runner transcribe（真实 CLI，unsafe） | 最小 MVP·真实转写 | ✅ 样本期真实转写成功（$0.13744，与 usage 实扣一致；transcription_id 锚定 + raw 落盘，Episode → transcribed） | NEXT_STEPS·真实转写、flow-test |
 | 词级重组 | 词级 JSON → 一句一条英文 SRT + 说话人前缀 + provenance sidecar | 执行层 `pipeline/wordrender.py` | 最小 MVP·基础架构 | ✅ 真实响应已验：709 条 en.srt + provenance（14061 词零缺失时间戳，S01/S02，产物已登记） | NEXT_STEPS·词级重组新组件 |
@@ -34,14 +34,14 @@
 | 支线 | 职责 | 为什么重要 | 与主线的关系 | 当前状态 | 证据位置 |
 | --- | --- | --- | --- | --- | --- |
 | 不重复计费 | 保证付费调用（转写/翻译/复核/调研/分类）不因重试、崩溃、重复入队而二次计费 | 头号横切项；服务端无幂等键已实测证实，自动重试即二次计费 | 横切下载→转写→翻译全程，尤其转写与翻译 | 🟡 已查证+实测（Scribe 无幂等键）；防重复计费设计已定稿；需求修订待用户确认 | `docs/verification/scribe-idempotency-doc-review.md`、`scribe-idempotency-controlled-test.md`、`.agent/scribe-idempotency-design.md`、`state/ledger.py` |
-| 崩溃恢复与长程调度 | 每步 checkpoint、transcript 持久化、safe/unsafe 重放、parked 熔断、memo、按需唤醒、跨天恢复 | 长程系统正确性根基；重启不得丢产物、回退状态、重复付费 | 包裹执行层全部环节 | 🟡 框架能力已验；Runner 需补齐边界已明确；长程故障注入留待长程阶段 | `docs/verification/flow-test.md`（含 kill -9 四崩溃点实验）、`runner/src/*.test.ts` |
+| 崩溃恢复与长程调度 | 每步 checkpoint、transcript 持久化、safe/unsafe 重放、parked 熔断、memo、按需唤醒、跨天恢复、执行租约 | 长程系统正确性根基；重启不得丢产物、回退状态、重复付费 | 包裹执行层全部环节 | 🟡 框架能力与有界调度已验；execution_lock 互斥／续约已实现；真实全链和长期故障注入待验收 | `docs/verification/flow-test.md`（含 kill -9 四崩溃点实验）、`runner/src/*.test.ts` |
 | 成本账本 | 记录每次付费调用金额估算、触发时间、期数归属；intent→outcome 两段式 + unknown 态对账；只读管理页汇总筛选 | 单期 <$0.5、空闲零付费可验证；是「禁止二次消费」的可观测载体 | 覆盖转写/翻译/复核/调研/看点/分类付费调用 | ✅ 账本与只读管理页已完成；R2 费用仍在 Cloudflare 独立核对 | `state/ledger.py`、`state/ledger_report.py`、`review/public/` |
 | 领域知识库 | 英超领域包：译名、术语、ASR 错听变体、volatile 重查；纯文本 + 独立 git + 人工确认沉淀 | 跨期降低人工校对量与调研项数；需求文档花篇幅的部分 | 服务翻译与复核；沉淀在交付后 | 🟡 最小底座已 init（`~/.translate-srt/`，status 通过）；领域包命名粒度待定、沉淀未演练 | `docs/HANDOFF.md`、`docs/verification/translate-srt-reuse.md`、`.agent/knowledge-base.md` |
 | override 机制 | 人工修改持久化保留，任何重跑优先于模型产物、不可覆盖 | 人工修改是最高优先级内容，审核窗口与发布后修订都依赖它 | 服务审核箱，横切驳回重跑与发布后修订 | 🟡 schema／纯合并／领域保存／局部重跑 faux 闭环已完成，真实付费重跑联调待做 | `docs/OVERRIDE_HANDOFF.md`、`docs/IMPLEMENTATION_PLAN.md`·审核与交付 |
 | 评测 | 后续从 override 历史生成标注样本，追踪质量与调研递减 | 验证人工工作量与调研项数是否下降 | 依赖审核与发布后修订的修改记录 | ⬜ 明确后置，不在审核与私人播客库 MVP | `docs/IMPLEMENTATION_PLAN.md`、`docs/REQUIREMENTS.md`·评测 |
 | 框架隔离 | ToolSpec 中立契约 + Runner 薄封装 + durable-adapter；业务工具零 pi-durable 依赖 | Pi Durable 包龄短、API 可无通知变动；隔离实验 API 保护业务与测试 | 包裹执行层全部工具与 conversation | ✅ 已完成（commit d1438bd） | `runner/src/tool-spec.ts`、`durable-adapter.ts`、`runner.ts`、`docs/HANDOFF.md` |
 | 部署运维 | VPS 部署、cron 按需唤醒、凭据/密钥保护、私有访问、备份恢复、磁盘保留、操作手册 | 长程稳定与隐私边界 | 发现层与交付层的运行时底座 | ⬜ 未开始（留待打磨）；拓扑已设计 | `docs/TECH_STACK.md`·部署拓扑、`docs/IMPLEMENTATION_PLAN.md`·打磨 |
-| 分类过滤 | 「只关心 Chelsea」过滤，转录前用便宜 LLM 对标题/简介分类（< $0.005/期） | 成本闸门，避免无关节目进入付费转写；纯元数据会漏男足讨论 | 发现层，入队前过滤候选 | ⬜ 未开始（留待自动化主链）；策略已定 | `docs/REQUIREMENTS.md`·节目源管理、`docs/IMPLEMENTATION_PLAN.md`·自动化主链 |
+| 分类过滤 | 「只关心 Chelsea」过滤，转录前用便宜 LLM 对标题/简介分类（< $0.005/期） | 成本闸门，避免无关节目进入付费转写；纯元数据会漏男足讨论 | 发现层，入队前过滤候选 | ✅ 独立分类任务、候选持久化、账本与防重发已完成；真实价格／命中率留受控验收 | `discover/classify.py`、`tests/test_classify.py` |
 
 ## 主线 vs 支线的投入哲学
 
@@ -59,4 +59,6 @@
 | 样本节目（一期真实 mp3 或 RSS 链接） | 已选定（2026-11-06）：《Boss with Jamie Carragher: Xabi Alonso》37:29 | 转写 + 翻译与复核（此项阻塞已解除） | enclosure `https://episodes.captivate.fm/episode/8db0bde6-c9cb-43be-92ab-b18987fbdc58.mp3`，feed `https://feeds.captivate.fm/sky-sports-premierleague/`（已实测 200）；转写预估 ≈$0.14 |
 | Scribe 计费单价差异 | 已解决（充值后重测 $0.22/h 零残差吻合，$0.40/h 系免费计划折算口径） | 转写成本基线 | 详见 `docs/verification/scribe-idempotency-controlled-test.md` 结案节 |
 | R2 配置与联调 | 已解决（真实验收通过） | 真实上传、动态签名与私有下载 | 三个对象 HEAD 通过；音频 Range 206、字幕／看点 200；未签名 400、过期签名 403；真实 Episode 未修改，零模型调用 |
+| 真实全链验收 Scribe unknown | 已解决 | Episode 2 转写恢复 | 显式 `:rebill:2` 直连成功，transcription_id=`UaiUmxuArxbVdoN3nQBU`，raw 已落盘；旧 unknown 保留，未覆盖 |
+| DeepSeek 主 Agent 余额 | 已解决 | 翻译／复核编排与真实全链验收 | 用户充值后恢复；翻译、复核、看点和 R2 发布均已完成，Episode 2 已到 delivered |
 | 需求修订（幂等键不成立） | 待用户确认 | 转写（防重复计费条目） | 修订提案见 `docs/verification/scribe-idempotency-controlled-test.md`；改 `docs/REQUIREMENTS.md` 对应条目 |

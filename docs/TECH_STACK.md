@@ -36,10 +36,10 @@
 
 | 用途 | 候选 | 状态 | 决策时机 |
 | --- | --- | --- | --- |
-| RSS 解析与条件请求 | feedparser / 标准库解析 | 待选 | 自动化主链 |
+| RSS 解析与条件请求 | 已定：feedparser + httpx | 已定 | 自动化主链 |
 | HTTP 客户端（Lookup、下载） | requests / httpx | 待选 | 最小 MVP（下载工具） |
 | 转写客户端 | ~~ElevenLabs 官方 SDK / 直接 HTTP~~ 已定：直接 HTTP（httpx） | 已定 | 已完成（最小 MVP·基础架构） |
-| 分类 LLM 客户端 | 按所选便宜模型供应商 SDK | 待选 | 自动化主链 |
+| 分类 LLM 客户端 | 已定：DeepSeek Chat Completions 直接 HTTP（httpx） | 已定 | 自动化主链 |
 | Node 审批服务框架 | ~~Express / Fastify~~ 已定：Fastify v5 | 已定 | 审核与私人播客库 MVP |
 | 审核页前端 | 已定：静态 HTML + 原生 JavaScript，无构建步骤 | 已定 | 审核与私人播客库 MVP |
 | SQLite 驱动 | 已定：Python stdlib sqlite3 统一领域事务；Node 经窄 CLI，不直接连接 | 已定 | 审核与私人播客库 MVP |
@@ -56,6 +56,7 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 | Episode | guid、feed、feed 快照、标题、发布时间、时长、enclosure、音频 hash、状态、产物清单引用、当前待审版本、auto_approve_at、自动审批暂停标记、熔断计数、审批通知 memo | REQUIREMENTS 数据模型 + IMPLEMENTATION_PLAN 补充；审核字段在审核与播客库 MVP 落迁移 |
 | 产物清单 | 路径、版本、校验、生成步骤、状态 | IMPLEMENTATION_PLAN |
 | override | 源稿版本、开始／结束时间、原文 hash、被修改产物版本、修改前后文本、请求幂等键、创建时间；历史追加保留 | REQUIREMENTS / IMPLEMENTATION_PLAN；SRT 条目号不作稳定主键 |
+| 执行租约 | Episode、owner、获取时间、过期时间；默认六小时并续约，防 cron 重叠执行同一期 | IMPLEMENTATION_PLAN / 自动调度实现 |
 | 审批记录 | 最终产物版本、SHA256、manual / auto_timeout、审批时间、请求标识 | REQUIREMENTS / ARCHITECTURE |
 | 发布记录 | 当前上线版本、交付对象与校验信息、发布时间；修订时保留旧版直至新版完整交付 | REQUIREMENTS / ARCHITECTURE |
 | 账本 | 所属期数、用途、触发时间、模型／服务、用量依据、金额估算、调用标识、结果状态 | IMPLEMENTATION_PLAN（schema 归执行层，发现层分类跨层写入） |
@@ -96,6 +97,23 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 - 知识库为独立 git 仓库，不随本仓库公开提交。
 - 审核入口、续签入口等按需启动方式待目标 VPS 环境实测（打磨阶段部署验收）。
 
+### cron 唤醒顺序（待部署验收）
+
+下列命令分别执行并退出，不启动常驻 worker；实际写入 crontab 前仍需完成本地真实全链验收：
+
+```bash
+# 每 15 分钟发现新节目
+uv run python -m discover.cli poll --classify
+# 有界处理 discovered 期数（持久化 execution_lock 互斥）
+node --experimental-strip-types runner/src/drive-pending.ts
+# 扫描到期的 12 小时审核窗口
+uv run python -m review.cli auto-approve-due
+# 补齐看点并发布已批准版本
+node --experimental-strip-types runner/src/drive-delivery.ts
+```
+
+调度器不强杀在途子进程，避免制造未知付费结果；交付 worker 区分可重试上传失败与不自动重试的 highlights 失败。
+
 ## 待定项（最小 MVP 验证后回填）
 
 - 子代理（翻译／复核）在 Pi Durable 中的接入方式：扩展任务 / 嵌套任务 / 独立 conversation。
@@ -111,6 +129,8 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 | 流程状态存储 | SQLite / 文本知识库 | 双存储分工 | 程序读写数据用 SQLite；知识库保持文本可读、可 git diff | 已定（已回填 REQUIREMENTS） |
 | 词级重组组件 | 自研 / 复用上游 render 类脚本 | 待定 | 「项目侧新组件」为已定事实（计划已标注），自研 / 复用上游 render 脚本的选择属待验证 | 待验证 |
 | 转写客户端 | ElevenLabs 官方 SDK / 直接 HTTP | 直接 HTTP（httpx） | 本项目仅用 Scribe 一小面（现行文档端点 `POST /v1/speech-to-text` + `GET /v1/speech-to-text/transcripts/{id}`，见幂等键查证；无幂等键可用），REST 与 SDK 均可获取 word 级时间戳与说话人分离；直接 HTTP 便于原始响应落盘、复用已定 httpx，避免大而全 SDK 的版本 churn 与无关升级牵连 | 已定 |
+| RSS 解析 | feedparser / 标准库 XML | feedparser（当前锁文件版本） | feedparser 只解析响应 bytes，httpx 负责条件请求；条目 id/guid、enclosures、published_parsed 用法已经 Context7 核对 | 已定 |
+| 分类客户端 | 供应商 SDK / 直接 HTTP | DeepSeek 直接 HTTP + JSON mode | 分类只发标题／简介；`response_format=json_object` 与 usage 字段按官方当前文档实现；call_ref 先落 intent，失败／unknown 不自动重发 | 已定 |
 | 审核服务接缝 | Node 直写 SQLite / Fastify + Python 领域 CLI | Fastify v5 + Python stdlib sqlite3 | 审核、override、审批与发布事务只在 Python 实现一次；Node 负责 HTTP、鉴权、静态页与音频流，避免原生 SQLite 依赖和双份状态机；Fastify v5 完整 JSON Schema 与 hooks 文档已经 Context7 核对 | 已定 |
 | R2 客户端 | boto3 S3 兼容 API | boto3（当前锁文件版本） | put_object 流式 Body、HEAD ContentLength + sha256 metadata、get_object 预签名；使用内容寻址 key，HEAD 不一致拒绝覆盖；API 用法已经 Context7 核对，真实 R2 联调单独验收 | 已定 |
 | 其余待选库 | 见候选表 | 未定 | 分别在标注的决策时机完成 | 待选 |

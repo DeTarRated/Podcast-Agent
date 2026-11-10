@@ -12,6 +12,13 @@
 - 真实样本完整演示（2026-11）：先备份真实数据库至 `var/backups/podcast_agent_before_demo_20261109T092309Z.db`，随后真实审批 → 一次 highlights 模型调用 → R2 发布 → 本地节目库验证通过，当前 Episode 为 delivered，节目库展示 898 条字幕。模型用量 `input=27287 / output=434`，记录成本约 `$0.03773748`；原结果回写窗口留下 unknown，已凭既有子任务结果核销，未重复调用。模型落在字幕间隙的时间点按最近字幕起点对齐，超过 3 秒才拒绝。手写测试看点已备份到 `var/backups/highlights-demo-20261109T092506Z/`。
 - 完整演示中修复：`review_dispatch` 工具名改为 DeepSeek 接受的合法函数名；`delivery.cli` 启动时加载 `.env`；看点 R2 key 增加 HTML 内容 hash，避免同字幕不同看点互相覆盖。演示密码不写入文档。
 - 只读「用量与费用」页已接入现有导航，支持汇总、节目／用途／状态／供应商筛选、明细和异常展示；实际账本联调返回 5 次调用、估算合计 `$0.42123`、无 intent／unknown／未定价记录。R2 费用未混入，保留 Cloudflare 控制台入口。
+- 自动化主链首批：feed 配置、ETag／Last-Modified 条件请求、guid+feed 去重、候选记录与 Episode 原子入队已实现。真实 Sky Sports RSS 只读解析通过（1747 条均含 guid 与音频 enclosure，零数据库写入、零音频下载）。为防止批量历史处理，新 feed 首轮默认只建立 `initial_feed_baseline`，不自动入队；显式 `--process-existing` 才处理存量。
+- Chelsea 分类已实现：`poll --classify` 启用 DeepSeek 直接 HTTP + JSON mode，只发送标题／简介；候选先落库，分类 call_ref 与判定持久化，独立账本记录 token 用量。重复轮询不重复分类，已有账本禁止自动重发；HTTP 失败记 failed，超时／无效响应记 unknown。测试全部 mock，未触发真实分类调用。
+- 单期自动执行框架已实现：`pipeline/episode_flow.py` 补齐下载三次退避、hash/artifact 与状态推进；wordrender 增加 create-only CLI；`runner/src/episode-agent.ts` 提供下载、unsafe 转写、重组、orchestrate、工作区读写与 unsafe dispatch；`drive-episode.ts` 为单期真实执行入口。工具名兼容 DeepSeek，路径限定单期工作区，skill／知识库只读白名单。
+- 自动调度命令已实现：`state/execution.py` + schema v3 持久化 execution_lock，支持互斥、过期接管、续约与持锁者释放；`drive-pending.ts` 有界并行处理 discovered，单期失败不阻塞其他期；`drive-delivery.ts` 补齐 highlights 后再发布，并显式标记不可自动重试的模型失败。cron 唤醒顺序已写入 TECH_STACK，但尚未实际安装；本地验收仍是 VPS 部署前置条件。
+- 真实自动全链验收现场：分类命中并创建 Episode 2，真实音频下载完成（3261.544 秒，hash 固化）；首次下载工具默认 120 秒超时导致误报，已延长至 600 秒。Scribe 首次经代理发生 RemoteProtocolError，未保存响应；经用户授权后新增显式 `:rebill:2` 并强制直连，转写成功（ID `UaiUmxuArxbVdoN3nQBU`，raw 落盘），旧 unknown 保留。主 Agent 充值后恢复；翻译与复核的 unknown 均凭既有 terminal 子任务和真实产物核销，未重发。复核说明已补齐，最终到达 reviewing。
+- Episode 2 已真实发布到 R2 并进入节目库：1904 条字幕、5 个有效看点。highlights 的 unknown 同样凭既有任务核销；模型原稿中一个超出音频范围的看点已备份至 `var/backups/episode2-highlights-model-original.json` 后人工移除，未重新调用模型。节目库 HTTP 验证通过，签名音频／字幕可用。Episode 2 项目账本共 5 次记录、估算合计 `$0.795702`，包含首次 unknown 转写与显式 re-bill 两笔估算；分类和主 Agent 对话成本不在这单期合计中。
+- 完整自动验收中另修复：交付 CLI 的 `{status,data}` 信封解包、dispatch 产物与账本 success 检查、按 transcribed/translated 状态恢复、review_notes 写入白名单、复核产物补齐。真实 cron 与 VPS 部署仍未执行。
 - 本文后续章节保留最小 MVP 建设过程与既有实验索引；其中「真实转写待做」「翻译与复核待做」「人工审批才交付」等旧阶段描述不再作为当前任务。
 
 ## 阅读顺序
