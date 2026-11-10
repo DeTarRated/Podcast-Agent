@@ -18,6 +18,7 @@ def create(
     published_at: Optional[str] = None,
     duration_secs: Optional[float] = None,
     enclosure: Optional[str] = None,
+    commit: bool = True,
 ) -> int:
     cur = conn.execute(
         """
@@ -27,7 +28,8 @@ def create(
         """,
         (guid, feed, feed_snapshot, title, published_at, duration_secs, enclosure),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return int(cur.lastrowid)
 
 

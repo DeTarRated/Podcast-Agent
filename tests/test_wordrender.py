@@ -9,6 +9,7 @@
 - audio_event 不进字幕文本、保留进 provenance
 - speaker_id 为 None 沿用前一说话人；全程无说话人则无前缀
 - 输入缺 words 字段 → 拒绝
+- create-only CLI：首次生成，重复输入复用且不覆盖
 """
 import json
 
@@ -179,6 +180,22 @@ def test_no_speakers_anywhere_no_prefix(tmp_path):
 def test_invalid_input_missing_words(tmp_path):
     with pytest.raises(ValueError, match="缺少 words"):
         wordrender.render({"language_code": "eng"}, tmp_path / "en.srt")
+
+
+def test_create_only_cli_reuses_identical_outputs(tmp_path, capsys):
+    raw = tmp_path / "scribe_raw.json"
+    raw.write_text(json.dumps(doc(word("Hello.", 0.0, 0.4))), encoding="utf-8")
+    out = tmp_path / "en.srt"
+    prov = tmp_path / "en.provenance.json"
+    args = [str(raw), str(out), "--provenance", str(prov)]
+    assert wordrender.main(args) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert first["reused"] is False
+    before = out.read_bytes()
+    assert wordrender.main(args) == 0
+    second = json.loads(capsys.readouterr().out)
+    assert second["reused"] is True
+    assert out.read_bytes() == before
 
 
 def test_srt_time_rounding():

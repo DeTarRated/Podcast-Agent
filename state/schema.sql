@@ -1,6 +1,24 @@
 -- 跨层数据契约：流程状态、审核修订、人工修改、审批与发布
 -- 约定：时间一律 ISO8601 UTC 文本；枚举用 CHECK 约束；金额未知为 NULL（不记零）
 
+-- 发现层·feed 配置；删除采用禁用，保留在途期数的历史快照
+CREATE TABLE IF NOT EXISTS feed (
+    id              INTEGER PRIMARY KEY,
+    name            TEXT NOT NULL,
+    feed_url        TEXT NOT NULL UNIQUE,
+    show_name       TEXT,
+    etag            TEXT,
+    last_modified   TEXT,
+    enabled         INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+    bootstrap_pending INTEGER NOT NULL DEFAULT 1 CHECK (bootstrap_pending IN (0,1)),
+    last_checked_at TEXT,
+    last_error      TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_feed_enabled ON feed(enabled);
+
 -- Episode：一期节目
 CREATE TABLE IF NOT EXISTS episode (
     id             INTEGER PRIMARY KEY,
@@ -34,6 +52,29 @@ CREATE TABLE IF NOT EXISTS artifact (
                 CHECK (status IN ('pending','done','failed')),
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 发现候选：包括已入队、跳过和失败，确保未入队项也有去重依据
+CREATE TABLE IF NOT EXISTS discovery_candidate (
+    id              INTEGER PRIMARY KEY,
+    feed_id         INTEGER NOT NULL REFERENCES feed(id),
+    guid            TEXT NOT NULL,
+    title           TEXT,
+    published_at    TEXT,
+    enclosure       TEXT,
+    summary         TEXT,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','enqueued','skipped','failed')),
+    reason          TEXT,
+    classification_relevant INTEGER CHECK (classification_relevant IS NULL OR classification_relevant IN (0,1)),
+    classification_call_ref TEXT,
+    episode_id      INTEGER REFERENCES episode(id) ON DELETE SET NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (feed_id, guid)
+);
+
+CREATE INDEX IF NOT EXISTS idx_discovery_candidate_status ON discovery_candidate(status);
+CREATE INDEX IF NOT EXISTS idx_discovery_candidate_episode ON discovery_candidate(episode_id);
 
 CREATE INDEX IF NOT EXISTS idx_artifact_episode ON artifact(episode_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_artifact_identity
@@ -76,6 +117,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_review_revision_current
     ON review_revision(episode_id) WHERE is_current = 1;
 CREATE INDEX IF NOT EXISTS idx_review_revision_due
     ON review_revision(status, auto_approve_paused, auto_approve_at);
+
+-- 执行互斥：持久化租约防 cron 重叠；过期租约可接管，不自动重放 unsafe 工具
+CREATE TABLE IF NOT EXISTS execution_lock (
+    episode_id  INTEGER PRIMARY KEY REFERENCES episode(id) ON DELETE CASCADE,
+    owner       TEXT NOT NULL,
+    acquired_at TEXT NOT NULL,
+    expires_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_execution_lock_expiry ON execution_lock(expires_at);
 
 -- 人工修改：追加历史；有效修改由 supersedes / retracted 修改链计算
 CREATE TABLE IF NOT EXISTS override (

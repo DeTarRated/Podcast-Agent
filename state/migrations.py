@@ -8,7 +8,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 _LEGACY_TABLES = {"episode", "artifact", "ledger"}
 
@@ -147,7 +147,7 @@ def _migrate_legacy_to_v1(conn: sqlite3.Connection) -> None:
         violations = conn.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             raise MigrationError(f"迁移后外键检查失败: {violations[:5]}")
-        conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        conn.execute("PRAGMA user_version=1")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -157,6 +157,34 @@ def _migrate_legacy_to_v1(conn: sqlite3.Connection) -> None:
             conn.execute("PRAGMA foreign_keys=ON")
 
 
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """增量增加 feed 与 discovery_candidate，不重写既有审核数据。"""
+    if conn.in_transaction:
+        raise MigrationError("迁移前存在未提交事务；请先提交或回滚")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _execute_latest_schema(conn)
+        conn.execute("PRAGMA user_version=2")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """增量增加 execution_lock。"""
+    if conn.in_transaction:
+        raise MigrationError("迁移前存在未提交事务；请先提交或回滚")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _execute_latest_schema(conn)
+        conn.execute("PRAGMA user_version=3")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def migrate(conn: sqlite3.Connection) -> None:
     """将空库或受支持旧库迁移到最新版本；重复调用无副作用。"""
     version = int(conn.execute("PRAGMA user_version").fetchone()[0])
@@ -164,6 +192,12 @@ def migrate(conn: sqlite3.Connection) -> None:
         return
     if version > SCHEMA_VERSION:
         raise MigrationError(f"数据库版本 {version} 高于代码支持版本 {SCHEMA_VERSION}")
+    if version == 1:
+        _migrate_v1_to_v2(conn)
+        version = 2
+    if version == 2:
+        _migrate_v2_to_v3(conn)
+        return
     if version != 0:
         raise MigrationError(f"不支持的数据库版本: {version}")
 
@@ -178,3 +212,5 @@ def migrate(conn: sqlite3.Connection) -> None:
     if "review_revision" in tables:
         raise MigrationError("user_version=0 但已存在 review_revision，需先检查迁移状态")
     _migrate_legacy_to_v1(conn)
+    _migrate_v1_to_v2(conn)
+    _migrate_v2_to_v3(conn)

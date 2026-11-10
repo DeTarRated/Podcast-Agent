@@ -16,7 +16,7 @@ from delivery.errors import DeliveryError
 from delivery.highlights import HighlightsError, load_validated, render_highlights_html
 from delivery.r2 import R2Settings, R2Store
 from pipeline import override as srt_override
-from state import manifest
+from state import ledger, manifest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HIGHLIGHTS_VERSION = "v1"
@@ -147,6 +147,15 @@ def _approved(conn) -> list[sqlite3.Row]:
 
 def _waiting_highlights(conn, delivery: sqlite3.Row, approval: sqlite3.Row, artifact: sqlite3.Row, subtitle_path: Path, json_path: Path, now: str) -> dict:
     json_path.parent.mkdir(parents=True, exist_ok=True)
+    call_ref = f"highlights:{approval['episode_id']}:{approval['sha256']}:prompt-{HIGHLIGHTS_VERSION}"
+    existing_call = ledger.get_by_ref(conn, call_ref)
+    if existing_call is not None and existing_call["status"] in ("failed", "unknown"):
+        with conn:
+            conn.execute(
+                "UPDATE delivery SET status = 'failed', error = ?, updated_at = ? WHERE id = ?",
+                (f"highlights 调用 {existing_call['status']}，禁止自动重试", now, delivery["id"]),
+            )
+        return {"status": "failed", "error": "highlights 结果失败或未知，不自动重试"}
     with conn:
         conn.execute(
             "UPDATE delivery SET status = 'waiting_highlights', updated_at = ? WHERE id = ?",
@@ -157,7 +166,7 @@ def _waiting_highlights(conn, delivery: sqlite3.Row, approval: sqlite3.Row, arti
             "role": "highlights",
             "inputPath": str(subtitle_path),
             "outputPath": str(json_path),
-            "callRef": f"highlights:{approval['episode_id']}:{approval['sha256']}:prompt-{HIGHLIGHTS_VERSION}",
+            "callRef": call_ref,
             "ledger": {
                 "episodeId": approval["episode_id"],
                 "purpose": "highlights",
@@ -185,6 +194,8 @@ def _publish_one(conn, approval: sqlite3.Row, store, now: str) -> dict:
     delivery = _ensure_delivery(conn, approval)
     if delivery["status"] == "superseded":
         return {"status": "superseded"}
+    if delivery["status"] == "failed" and (delivery["error"] or "").startswith("highlights"):
+        return {"status": "failed", "error": delivery["error"]}
     episode = conn.execute("SELECT * FROM episode WHERE id = ?", (approval["episode_id"],)).fetchone()
     artifact, subtitle_path = _artifact(conn, approval["episode_id"], approval["artifact_id"])
     json_path, html_path = highlights_paths(artifact)
@@ -262,6 +273,22 @@ def _publish_one(conn, approval: sqlite3.Row, store, now: str) -> dict:
     }
 
 
+def mark_highlights_failed(conn: sqlite3.Connection, *, approval_id: int, error: str, now: str) -> dict:
+    """交付 worker 明确记录不可自动重试的 highlights 失败。"""
+    message = error[:1000]
+    if not message.startswith("highlights"):
+        message = f"highlights:{message}"
+    with conn:
+        conn.execute(
+            """
+            UPDATE delivery SET status = 'failed', error = ?, updated_at = ?
+            WHERE approval_id = ? AND status IN ('pending','waiting_highlights','uploading','failed')
+            """,
+            (message, now, approval_id),
+        )
+    return {"status": "failed", "approval_id": approval_id, "error": message}
+
+
 def publish_approved(conn: sqlite3.Connection, *, now: str, store=None) -> dict:
     """逐期发布，单期失败不阻塞其他期；store 为 fake 时零真实 R2。"""
     _supersede_stale(conn, now)
@@ -271,9 +298,12 @@ def publish_approved(conn: sqlite3.Connection, *, now: str, store=None) -> dict:
             result = _publish_one(conn, approval, store, now)
         except (DeliveryError, HighlightsError, OSError, srt_override.OverrideError) as exc:
             delivery = _delivery_for(conn, approval["id"])
+            message = str(exc)
+            if isinstance(exc, HighlightsError):
+                message = f"highlights:{message}"
             if delivery is not None:
-                _mark_failed(conn, delivery["id"], str(exc), now)
-            result = {"status": "failed", "error": str(exc)}
+                _mark_failed(conn, delivery["id"], message, now)
+            result = {"status": "failed", "error": message}
         items.append({"episode_id": approval["episode_id"], "approval_id": approval["id"], **result})
     return {
         "published": sum(item["status"] == "delivered" for item in items),

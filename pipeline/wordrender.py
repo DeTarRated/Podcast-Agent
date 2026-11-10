@@ -14,10 +14,14 @@
 """
 from __future__ import annotations
 
+import argparse
 import json
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Union
+
+from pipeline.override import write_create_only
 
 SENTENCE_TERMINATORS = {".", "!", "?", "…", "。", "！", "？"}
 _TRAILING_QUOTES = "\"'”’"
@@ -207,3 +211,39 @@ def render(
         out_prov.write_text(
             json.dumps(prov, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+
+
+def main(argv=None) -> int:
+    """create-only CLI：重复输入可恢复，不覆盖已有 SRT / provenance。"""
+    parser = argparse.ArgumentParser(description="Scribe 词级 JSON → 英文 SRT + provenance")
+    parser.add_argument("raw")
+    parser.add_argument("out_srt")
+    parser.add_argument("--provenance", required=True)
+    args = parser.parse_args(argv)
+    out_srt = Path(args.out_srt)
+    out_prov = Path(args.provenance)
+    out_srt.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory(dir=out_srt.parent) as directory:
+            temp_srt = Path(directory) / "en.srt"
+            temp_prov = Path(directory) / "en.provenance.json"
+            render(Path(args.raw), temp_srt, temp_prov)
+            srt_payload = temp_srt.read_bytes()
+            prov_payload = temp_prov.read_bytes()
+        srt_created = write_create_only(out_srt, srt_payload)
+        prov_created = write_create_only(out_prov, prov_payload)
+        result = {
+            "status": "success",
+            "out_srt": str(out_srt),
+            "provenance": str(out_prov),
+            "reused": not srt_created and not prov_created,
+        }
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(json.dumps({"status": "failed", "error": str(exc)}, ensure_ascii=False))
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

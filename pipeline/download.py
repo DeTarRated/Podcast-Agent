@@ -48,12 +48,16 @@ def download(url: str, dest: Path, *, timeout: float = 120.0, trust_env: bool = 
     trust_env=False 用于测试，不读取环境代理。
     """
     tmp = dest.with_suffix(dest.suffix + ".part")
-    with httpx.Client(follow_redirects=True, timeout=timeout, trust_env=trust_env) as client:
-        with client.stream("GET", url) as resp:
-            resp.raise_for_status()
-            with open(tmp, "wb") as f:
-                for chunk in resp.iter_bytes():
-                    f.write(chunk)
+    try:
+        with httpx.Client(follow_redirects=True, timeout=timeout, trust_env=trust_env) as client:
+            with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                with open(tmp, "wb") as f:
+                    for chunk in resp.iter_bytes():
+                        f.write(chunk)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
     new_hash = sha256_file(tmp)
     if dest.exists():

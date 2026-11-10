@@ -36,7 +36,10 @@ def _open(path: Optional[str]):
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="交付与私人播客库 JSON CLI")
-    parser.add_argument("command", choices=["publish-approved", "library", "detail"])
+    parser.add_argument(
+        "command",
+        choices=["publish-approved", "mark-highlights-failed", "library", "detail"],
+    )
     parser.add_argument("--db")
     parser.add_argument("--now")
     args = parser.parse_args(argv)
@@ -48,6 +51,10 @@ def main(argv=None) -> int:
         try:
             if args.command == "publish-approved":
                 data = publish.publish_approved(conn, now=now)
+            elif args.command == "mark-highlights-failed":
+                data = publish.mark_highlights_failed(
+                    conn, approval_id=payload["approval_id"], error=payload["error"], now=now
+                )
             elif args.command == "library":
                 data = library.list_episodes(conn)
             else:

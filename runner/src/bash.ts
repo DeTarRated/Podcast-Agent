@@ -10,7 +10,7 @@ export interface RunResult {
 export function runCommand(
   cmd: string,
   args: string[],
-  opts: { cwd: string; timeoutMs?: number },
+  opts: { cwd: string; timeoutMs?: number; input?: string },
 ): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd: opts.cwd });
@@ -26,6 +26,8 @@ export function runCommand(
       stderr += d.toString();
     });
     child.on("error", reject);
+    if (opts.input !== undefined) child.stdin.end(opts.input);
+    else child.stdin.end();
     child.on("close", (code) => {
       if (timer) clearTimeout(timer);
       resolve({ exitCode: code ?? -1, stdout, stderr });

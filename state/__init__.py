@@ -1,1 +1,1 @@
-"""state 包：Episode、产物、账本、审核修订、override 与发布数据契约。"""
+"""state 包：feed、发现、Episode、产物、账本、执行租约、审核与发布契约。"""
