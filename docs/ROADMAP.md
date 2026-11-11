@@ -1,64 +1,63 @@
 # 播客翻译 Agent — 主线与支线全景图
 
 - 日期：2026-11
-- 定位：项目全景索引。只给「主线有哪些环节、支线有哪些机制、当前状态与阻塞」的一页总览；细节指向各权威文档（需求 `docs/REQUIREMENTS.md`、架构 `docs/ARCHITECTURE.md`、实施计划 `docs/IMPLEMENTATION_PLAN.md`、最小 MVP 清单 `docs/NEXT_STEPS.md`、最新现状 `docs/HANDOFF.md`）。
-- 维护约定：状态变化时更新——主线表「所处阶段」列（阶段推进时）与「当前状态」列（环节完成/阻塞变化时）、支线表「当前状态」列、「当前阻塞清单」节（凭据/样本就绪或解除阻塞时增删行），并更新本头部日期。
+- 定位：项目全景索引。主线只列节目数据流，支线列横切机制；当前状态、运行入口与恢复证据统一见 `docs/HANDOFF.md`
+- 需求 `docs/REQUIREMENTS.md`；架构 `docs/ARCHITECTURE.md`；实施计划 `docs/IMPLEMENTATION_PLAN.md`；表结构 `docs/DATA_MODEL.md`；接口 `docs/API_REFERENCE.md`
+- 高并发专项范围：`docs/HIGH_CONCURRENCY_REQUIREMENTS.md`；实测：`docs/PERFORMANCE_REPORT.md`
+- 状态变化时更新主线／支线当前状态与阻塞；历史交接不再另建多份文档
 
 ## 状态标记约定
 
 | 标记 | 含义 |
 | --- | --- |
-| ✅ | 完成（有测试或实验证据） |
-| 🟡 | 部分就绪（部分组件或前置已完成，仍有剩余项） |
-| ⛔ | 被外部阻塞（缺凭据/样本，无法推进） |
-| ⬜ | 未开始（按阶段留待，尚未轮到） |
+| ✅ | 完成，有测试或实验证据 |
+| 🟡 | 部分就绪，仍有剩余项 |
+| ⛔ | 被外部条件阻塞 |
+| ⬜ | 未开始，按阶段留待 |
 
-## 主线（七个环节）
+## 主线
 
-主线 = 单期节目从头到尾的数据流：发现 → 下载 → 转写 → 词级重组 → 翻译与复核 → 审核箱 → 私人播客库。
+主线 = 发现 → 下载 → 转写 → 词级重组 → 翻译与复核 → 审核箱 → 私人播客库。
 
-| 环节 | 职责 | 归属分层与目录 | 所处阶段 | 当前状态 | 验收归属文档 |
-| --- | --- | --- | --- | --- | --- |
-| 发现播客 | cron 轮询 + ETag/304 + guid 去重 + 历史基线 + 分类过滤，新期入队 | 发现层 `discover/` + 执行层 `runner/` | 自动化主链 | ✅ 新 Episode 2 真实分类→下载→转写→翻译→复核→看点→R2→节目库验收通过；cron/VPS 留部署阶段 | REQUIREMENTS·节目源管理/增量发现、IMPLEMENTATION_PLAN·自动化主链 |
-| 下载 | 跟随 302 下载 mp3，sha256/大小/时长固化，首版保护，重试 | 执行层 `pipeline/download.py` | 最小 MVP·基础架构 | ✅ | NEXT_STEPS·最小下载工具 |
-| 转写 | Scribe v2 说话人分离 + 词级时间戳，原始响应落盘 | 执行层 `pipeline/scribe.py` + runner transcribe（真实 CLI，unsafe） | 最小 MVP·真实转写 | ✅ 样本期真实转写成功（$0.13744，与 usage 实扣一致；transcription_id 锚定 + raw 落盘，Episode → transcribed） | NEXT_STEPS·真实转写、flow-test |
-| 词级重组 | 词级 JSON → 一句一条英文 SRT + 说话人前缀 + provenance sidecar | 执行层 `pipeline/wordrender.py` | 最小 MVP·基础架构 | ✅ 真实响应已验：709 条 en.srt + provenance（14061 词零缺失时间戳，S01/S02，产物已登记） | NEXT_STEPS·词级重组新组件 |
-| 翻译与复核 | translate-srt 全流程：体检、知识库、术语表、翻译、复核、重切分、provenance | 执行层 `pipeline/orchestrate.py` + `runner/` + `skills/translate-srt/` | 最小 MVP·翻译与复核 | ✅ 样本期真实全链路完成，复核稿 679 条、重切分稿 898 条，Episode = reviewing | `docs/MVP_HANDOFF.md`、`docs/verification/mvp-cost-baseline.md` |
-| 审核箱 | 多期待审、同步对照、定点修改、人工／12 小时超时审批、驳回与保留待审 | 审核层 `review/` | 审核与私人播客库 MVP | 🟡 审核页、override、局部重跑与 fake 交付闭环已完成；真实付费重跑及 R2 联调待做 | IMPLEMENTATION_PLAN·审核与交付、REQUIREMENTS·人工审核与审核箱 |
-| 私人播客库 | 全部已发布节目、音频与同步字幕、看点、SRT 下载、发布后修订、R2 动态签名 URL | 交付层 `delivery/` | 审核与私人播客库 MVP | ✅ 真实样本完成审批 → 模型看点 → R2 → 本地节目库（898 条字幕） | IMPLEMENTATION_PLAN·审核与交付、REQUIREMENTS·交付与私人播客库 |
+| 环节 | 职责 | 归属分层与目录 | 当前状态 | 验收入口 |
+| --- | --- | --- | --- | --- |
+| 发现播客 | 条件轮询、历史基线、guid+feed 去重、分类过滤、新期入队 | `discover/` + `runner/` | ✅ Episode 2 真实自动全链通过；cron／VPS 留部署 | `docs/HANDOFF.md`、`tests/test_discover.py` |
+| 下载 | 302、hash／大小／时长固化、首版保护、重试 | `pipeline/download.py`、`pipeline/episode_flow.py` | ✅ | `tests/test_download.py`、`tests/test_episode_flow.py` |
+| 转写 | Scribe v2 说话人分离、词级时间戳、原始响应落盘与恢复 | `pipeline/scribe.py` + Runner unsafe | ✅ 真实转写与显式 re-bill 恢复通过 | `docs/verification/scribe-idempotency-doc-review.md`、`docs/verification/scribe-idempotency-controlled-test.md` |
+| 词级重组 | 词级 JSON → 英文 SRT + provenance | `pipeline/wordrender.py` | ✅ | `tests/test_wordrender.py` |
+| 翻译与复核 | skill 全流程、术语、翻译、复核、重切分、provenance | `pipeline/orchestrate.py` + `runner/` + `skills/translate-srt/` | ✅ 样本期与 Episode 2 均已验证 | `docs/verification/mvp-cost-baseline.md`、`docs/HANDOFF.md` |
+| 审核箱 | 多期待审、双语对照、override、人工／超时审批、驳回与保留待审 | `review/` | ✅ 审核、修订、权限与已交付过滤均通过 | `docs/HANDOFF.md`、`tests/test_review_service.py` |
+| 私人播客库 | 已发布节目、音频、同步字幕、看点、SRT 下载、发布后修订、R2 动态签名 | `delivery/` | ✅ Episode 1 与 Episode 2 已实际发布 | `docs/HANDOFF.md`、`tests/test_delivery.py` |
 
-## 支线（九条）
+## 支线
 
-支线 = 不直接产出主线产物、但保障正确性/成本/质量的横切机制。用户明确：支线（尤其「禁止二次消费」）可能比主线更重要。
+支线保障正确性、成本、质量和长期运行，不是所有支线都需要高并发指标。
 
-| 支线 | 职责 | 为什么重要 | 与主线的关系 | 当前状态 | 证据位置 |
-| --- | --- | --- | --- | --- | --- |
-| 不重复计费 | 保证付费调用（转写/翻译/复核/调研/分类）不因重试、崩溃、重复入队而二次计费 | 头号横切项；服务端无幂等键已实测证实，自动重试即二次计费 | 横切下载→转写→翻译全程，尤其转写与翻译 | 🟡 已查证+实测（Scribe 无幂等键）；防重复计费设计已定稿；需求修订待用户确认 | `docs/verification/scribe-idempotency-doc-review.md`、`scribe-idempotency-controlled-test.md`、`.agent/scribe-idempotency-design.md`、`state/ledger.py` |
-| 崩溃恢复与长程调度 | 每步 checkpoint、transcript 持久化、safe/unsafe 重放、parked 熔断、memo、按需唤醒、跨天恢复、执行租约 | 长程系统正确性根基；重启不得丢产物、回退状态、重复付费 | 包裹执行层全部环节 | 🟡 框架能力与有界调度已验；execution_lock 互斥／续约已实现；真实全链和长期故障注入待验收 | `docs/verification/flow-test.md`（含 kill -9 四崩溃点实验）、`runner/src/*.test.ts` |
-| 成本账本 | 记录每次付费调用金额估算、触发时间、期数归属；intent→outcome 两段式 + unknown 态对账；只读管理页汇总筛选 | 单期 <$0.5、空闲零付费可验证；是「禁止二次消费」的可观测载体 | 覆盖转写/翻译/复核/调研/看点/分类付费调用 | ✅ 账本与只读管理页已完成；R2 费用仍在 Cloudflare 独立核对 | `state/ledger.py`、`state/ledger_report.py`、`review/public/` |
-| 领域知识库 | 英超领域包：译名、术语、ASR 错听变体、volatile 重查；纯文本 + 独立 git + 人工确认沉淀 | 跨期降低人工校对量与调研项数；需求文档花篇幅的部分 | 服务翻译与复核；沉淀在交付后 | 🟡 最小底座已 init（`~/.translate-srt/`，status 通过）；领域包命名粒度待定、沉淀未演练 | `docs/HANDOFF.md`、`docs/verification/translate-srt-reuse.md`、`.agent/knowledge-base.md` |
-| override 机制 | 人工修改持久化保留，任何重跑优先于模型产物、不可覆盖 | 人工修改是最高优先级内容，审核窗口与发布后修订都依赖它 | 服务审核箱，横切驳回重跑与发布后修订 | 🟡 schema／纯合并／领域保存／局部重跑 faux 闭环已完成，真实付费重跑联调待做 | `docs/OVERRIDE_HANDOFF.md`、`docs/IMPLEMENTATION_PLAN.md`·审核与交付 |
-| 评测 | 后续从 override 历史生成标注样本，追踪质量与调研递减 | 验证人工工作量与调研项数是否下降 | 依赖审核与发布后修订的修改记录 | ⬜ 明确后置，不在审核与私人播客库 MVP | `docs/IMPLEMENTATION_PLAN.md`、`docs/REQUIREMENTS.md`·评测 |
-| 框架隔离 | ToolSpec 中立契约 + Runner 薄封装 + durable-adapter；业务工具零 pi-durable 依赖 | Pi Durable 包龄短、API 可无通知变动；隔离实验 API 保护业务与测试 | 包裹执行层全部工具与 conversation | ✅ 已完成（commit d1438bd） | `runner/src/tool-spec.ts`、`durable-adapter.ts`、`runner.ts`、`docs/HANDOFF.md` |
-| 部署运维 | VPS 部署、cron 按需唤醒、凭据/密钥保护、私有访问、备份恢复、磁盘保留、操作手册 | 长程稳定与隐私边界 | 发现层与交付层的运行时底座 | ⬜ 未开始（留待打磨）；拓扑已设计 | `docs/TECH_STACK.md`·部署拓扑、`docs/IMPLEMENTATION_PLAN.md`·打磨 |
-| 分类过滤 | 「只关心 Chelsea」过滤，转录前用便宜 LLM 对标题/简介分类（< $0.005/期） | 成本闸门，避免无关节目进入付费转写；纯元数据会漏男足讨论 | 发现层，入队前过滤候选 | ✅ 独立分类任务、候选持久化、账本与防重发已完成；真实价格／命中率留受控验收 | `discover/classify.py`、`tests/test_classify.py` |
+| 支线 | 职责 | 当前状态 | 证据位置 |
+| --- | --- | --- | --- |
+| 不重复计费 | call_ref、intent→outcome、unknown 对账，禁止盲目重发 | ✅ 已查证、实测并在真实恢复中使用 | `docs/verification/scribe-idempotency-doc-review.md`、`docs/verification/scribe-idempotency-controlled-test.md`、`state/ledger.py` |
+| 崩溃恢复与调度 | checkpoint、safe/unsafe、parked、租约、心跳、按需唤醒 | ✅ 本地队列与恢复通过；长期生产故障待验收 | `docs/verification/flow-test.md`、`state/postgres/job.py`、`runner/src/drive-pending.ts` |
+| 成本账本 | 用量、金额估算、期数归属、unknown 与只读管理页 | ✅ 账本与管理页完成；R2 费用由 Cloudflare 独立核对 | `state/ledger.py`、`state/ledger_report.py`、`docs/API_REFERENCE.md` |
+| 领域知识库 | 英超译名、术语、ASR 变体、volatile 重查、人工沉淀 | 🟡 最小底座已 init，沉淀仍待演练 | `docs/verification/translate-srt-reuse.md`、`.agent/knowledge-base.md` |
+| override 机制 | 人工修改持久化、重跑人工优先、冲突阻断 | ✅ 保存、合并、驳回与发布后修订通过；真实付费局部重跑待受控验收 | `docs/HANDOFF.md`、`pipeline/override.py`、`review/service.py` |
+| 评测 | 后续从 override 历史生成样本，追踪质量与工作量 | ⬜ 明确后置，不阻塞当前版本 | `docs/REQUIREMENTS.md`·评测 |
+| 框架隔离 | ToolSpec 中立契约与 Runner 薄封装，隔离实验 API | ✅ | `runner/src/tool-spec.ts`、`runner/src/durable-adapter.ts`、`docs/verification/flow-test.md` |
+| 部署运维 | VPS、cron、凭据、私有访问、备份、磁盘与操作手册 | ⬜ 待部署阶段；本地服务与命令已具备 | `docs/TECH_STACK.md`、`docs/HANDOFF.md` |
+| 分类过滤 | 只按标题／简介判断 Chelsea 相关性，独立账本，入队前过滤 | ✅ mock 与真实分类入队通过；价格／命中率继续观察 | `discover/classify.py`、`tests/test_classify.py` |
+| 多用户与高并发 | PostgreSQL 队列、多 worker、Redis 闸门、授权、预算与本地压测 | ✅ 核心链路已实现并有本地证据；生产部署与真实供应商校准待做 | `docs/HIGH_CONCURRENCY_REQUIREMENTS.md`、`docs/PERFORMANCE_REPORT.md`、`state/postgres/` |
 
-## 主线 vs 支线的投入哲学
+## 投入原则
 
-- 主线只是数据流骨架：把「发现→下载→转写→重组→翻译→审核窗口→私人播客库」串起来，本身不构成项目壁垒。
-- 支线才是项目价值所在。需求文档真正花篇幅的是：禁止二次消费（幂等、成本与计费透明）、崩溃恢复（调度与长程运行）、override（人工修改永不被覆盖）以及后续评测。这些横切机制决定系统能否长程正确、成本可控、质量可追踪。
-- 当前投入分布印证这一点：已完成的工作几乎全部落在支线——ToolSpec 框架隔离、账本两段式、kill -9 崩溃实验、Scribe 幂等查证与防重复计费设计、知识库 init；主线仅完成下载与词级重组两个环节。执行骨架与横切保障先于主线铺开，符合计划「状态与产物先于自动化规模」的贯穿约束。
-- 「禁止二次消费」是支线的支点：服务端无幂等键已实测证实，因此它决定转写/翻译的恢复策略（凭 ID 查询而非重发）、账本语义（intent→outcome、unknown 态）、以及自动重试永远关闭这一红线。
+- 主线是业务数据流，支线决定系统能否长期正确、可控成本和可追踪质量。
+- 防重复付费、崩溃恢复、override 和私有交付优先级高于继续打磨页面。
+- 高并发只投入任务队列、供应商限流／预算和多用户只读访问，不为所有功能设置 QPS 指标。
+- 本地 mock 结果与真实供应商／生产结果必须分开记录。
+- 历史交接合并到 `docs/HANDOFF.md`，实验证据留在 `docs/verification/`，不重复创建过期交接文档。
 
 ## 当前阻塞清单
 
-| 阻塞项 | 状态 | 卡住的主线环节 | 说明 |
+| 阻塞项 | 状态 | 影响 | 处理入口 |
 | --- | --- | --- | --- |
-| Scribe key | 已解决（`.env` 中 `ELEVENLABS_API_KEY`，不入库） | 转写（此项阻塞已解除） | 转写仍被样本节目阻塞；`pipeline/scribe.py` 未实现 |
-| 模型凭据（翻译快模型、复核同档模型、调研快模型） | 已解决（2026-11-06）：DeepSeek key 已填 `.env` 并实测可用 | 翻译与复核（此项阻塞已解除） | 路由已定：翻译/调研 `deepseek/deepseek-flash`、复核 `deepseek/deepseek-v4-pro`；换 provider 只改 `.env` 路由行 + 对应 key |
-| 样本节目（一期真实 mp3 或 RSS 链接） | 已选定（2026-11-06）：《Boss with Jamie Carragher: Xabi Alonso》37:29 | 转写 + 翻译与复核（此项阻塞已解除） | enclosure `https://episodes.captivate.fm/episode/8db0bde6-c9cb-43be-92ab-b18987fbdc58.mp3`，feed `https://feeds.captivate.fm/sky-sports-premierleague/`（已实测 200）；转写预估 ≈$0.14 |
-| Scribe 计费单价差异 | 已解决（充值后重测 $0.22/h 零残差吻合，$0.40/h 系免费计划折算口径） | 转写成本基线 | 详见 `docs/verification/scribe-idempotency-controlled-test.md` 结案节 |
-| R2 配置与联调 | 已解决（真实验收通过） | 真实上传、动态签名与私有下载 | 三个对象 HEAD 通过；音频 Range 206、字幕／看点 200；未签名 400、过期签名 403；真实 Episode 未修改，零模型调用 |
-| 真实全链验收 Scribe unknown | 已解决 | Episode 2 转写恢复 | 显式 `:rebill:2` 直连成功，transcription_id=`UaiUmxuArxbVdoN3nQBU`，raw 已落盘；旧 unknown 保留，未覆盖 |
-| DeepSeek 主 Agent 余额 | 已解决 | 翻译／复核编排与真实全链验收 | 用户充值后恢复；翻译、复核、看点和 R2 发布均已完成，Episode 2 已到 delivered |
-| 需求修订（幂等键不成立） | 待用户确认 | 转写（防重复计费条目） | 修订提案见 `docs/verification/scribe-idempotency-controlled-test.md`；改 `docs/REQUIREMENTS.md` 对应条目 |
+| 生产部署 | ⬜ 待执行 | VPS、cron、HTTPS、强认证、监控与生产压测 | `docs/TECH_STACK.md`、`docs/HANDOFF.md` |
+| 需求修订（Scribe 无服务端幂等键） | 待确认是否回填既有需求 | 防止把本地 call_ref 误认为供应商幂等 | `docs/verification/scribe-idempotency-controlled-test.md` |
+| 真实供应商长期限流校准 | ⬜ 待生产小流量验收 | 本地速率不代表账号真实配额 | `docs/REDIS_COORDINATION.md`、`docs/PERFORMANCE_REPORT.md` |

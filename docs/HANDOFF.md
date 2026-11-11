@@ -1,189 +1,167 @@
-# 交接文档 — 播客翻译 Agent
+# 项目交接与当前状态
 
 - 日期：2026-11
-- 定位：给下一个新会话的接手说明，覆盖「读什么、现状到哪、已定什么、待确认什么、本会话已完成什么、需要用户配合什么、怎么自检」
-- 生成方式：父代理与 worker 子代理迭代（草稿 → 审阅 → 修订），父代理定稿
+- 定位：当前状态、验证证据、运行入口和剩余工作的唯一交接索引
+- 历史整理：已完成的最小 MVP 清单、MVP 交接和 override 专题交接已合并到本文件；验证证据继续保留在 `docs/verification/`
+- 当前阶段：本地真实自动全链已通过；高并发核心链路与本地压测已通过；VPS／生产部署尚未执行
 
-## 与既有交接文档的关系
+## 当前已验证的系统闭环
 
-- 最新状态补充：最小 MVP 已完成，完成证据见 `docs/MVP_HANDOFF.md`；当前进入「审核与私人播客库 MVP」，总体图纸为 `.agent/tmp/review-library-mvp-execution.md`，代码实现规格为 `.agent/tmp/review-library-mvp-implementation-spec.md`。
-- 当前权威口径为审核箱 12 小时人工干预窗口、到期 `auto_timeout` 自动审批、私人播客库、发布后修订及评测后置；以 `docs/REQUIREMENTS.md`、`docs/ARCHITECTURE.md` 与 `docs/IMPLEMENTATION_PLAN.md` 为准。
-- 真实 R2 验收（2026-11）：使用临时数据库与工作区，实际上传样本音频、字幕和测试看点三个对象，HEAD 元数据全部通过；音频 Range 206、字幕与看点下载 200、未签名请求 400、过期签名 403。真实 Episode 未修改，模型调用为零；测试对象保留在私有 `podcast` 桶。
-- 真实样本完整演示（2026-11）：先备份真实数据库至 `var/backups/podcast_agent_before_demo_20261109T092309Z.db`，随后真实审批 → 一次 highlights 模型调用 → R2 发布 → 本地节目库验证通过，当前 Episode 为 delivered，节目库展示 898 条字幕。模型用量 `input=27287 / output=434`，记录成本约 `$0.03773748`；原结果回写窗口留下 unknown，已凭既有子任务结果核销，未重复调用。模型落在字幕间隙的时间点按最近字幕起点对齐，超过 3 秒才拒绝。手写测试看点已备份到 `var/backups/highlights-demo-20261109T092506Z/`。
-- 完整演示中修复：`review_dispatch` 工具名改为 DeepSeek 接受的合法函数名；`delivery.cli` 启动时加载 `.env`；看点 R2 key 增加 HTML 内容 hash，避免同字幕不同看点互相覆盖。演示密码不写入文档。
-- 只读「用量与费用」页已接入现有导航，支持汇总、节目／用途／状态／供应商筛选、明细和异常展示；实际账本联调返回 5 次调用、估算合计 `$0.42123`、无 intent／unknown／未定价记录。R2 费用未混入，保留 Cloudflare 控制台入口。
-- 自动化主链首批：feed 配置、ETag／Last-Modified 条件请求、guid+feed 去重、候选记录与 Episode 原子入队已实现。真实 Sky Sports RSS 只读解析通过（1747 条均含 guid 与音频 enclosure，零数据库写入、零音频下载）。为防止批量历史处理，新 feed 首轮默认只建立 `initial_feed_baseline`，不自动入队；显式 `--process-existing` 才处理存量。
-- Chelsea 分类已实现：`poll --classify` 启用 DeepSeek 直接 HTTP + JSON mode，只发送标题／简介；候选先落库，分类 call_ref 与判定持久化，独立账本记录 token 用量。重复轮询不重复分类，已有账本禁止自动重发；HTTP 失败记 failed，超时／无效响应记 unknown。测试全部 mock，未触发真实分类调用。
-- 单期自动执行框架已实现：`pipeline/episode_flow.py` 补齐下载三次退避、hash/artifact 与状态推进；wordrender 增加 create-only CLI；`runner/src/episode-agent.ts` 提供下载、unsafe 转写、重组、orchestrate、工作区读写与 unsafe dispatch；`drive-episode.ts` 为单期真实执行入口。工具名兼容 DeepSeek，路径限定单期工作区，skill／知识库只读白名单。
-- 自动调度命令已实现：`state/execution.py` + schema v3 持久化 execution_lock，支持互斥、过期接管、续约与持锁者释放；`drive-pending.ts` 有界并行处理 discovered，单期失败不阻塞其他期；`drive-delivery.ts` 补齐 highlights 后再发布，并显式标记不可自动重试的模型失败。cron 唤醒顺序已写入 TECH_STACK，但尚未实际安装；本地验收仍是 VPS 部署前置条件。
-- 真实自动全链验收现场：分类命中并创建 Episode 2，真实音频下载完成（3261.544 秒，hash 固化）；首次下载工具默认 120 秒超时导致误报，已延长至 600 秒。Scribe 首次经代理发生 RemoteProtocolError，未保存响应；经用户授权后新增显式 `:rebill:2` 并强制直连，转写成功（ID `UaiUmxuArxbVdoN3nQBU`，raw 落盘），旧 unknown 保留。主 Agent 充值后恢复；翻译与复核的 unknown 均凭既有 terminal 子任务和真实产物核销，未重发。复核说明已补齐，最终到达 reviewing。
-- Episode 2 已真实发布到 R2 并进入节目库：1904 条字幕、5 个有效看点。highlights 的 unknown 同样凭既有任务核销；模型原稿中一个超出音频范围的看点已备份至 `var/backups/episode2-highlights-model-original.json` 后人工移除，未重新调用模型。节目库 HTTP 验证通过，签名音频／字幕可用。Episode 2 项目账本共 5 次记录、估算合计 `$0.795702`，包含首次 unknown 转写与显式 re-bill 两笔估算；分类和主 Agent 对话成本不在这单期合计中。
-- 完整自动验收中另修复：交付 CLI 的 `{status,data}` 信封解包、dispatch 产物与账本 success 检查、按 transcribed/translated 状态恢复、review_notes 写入白名单、复核产物补齐。真实 cron 与 VPS 部署仍未执行。
-- 本文后续章节保留最小 MVP 建设过程与既有实验索引；其中「真实转写待做」「翻译与复核待做」「人工审批才交付」等旧阶段描述不再作为当前任务。
+```text
+RSS 发现与可选 Chelsea 分类
+→ Episode 去重入队
+→ 下载与首次音频固化
+→ Scribe 词级转写
+→ 词级重组与英文 SRT
+→ 翻译、复核、重切分
+→ 审核箱 / 人工修改 / override
+→ 人工通过或 12 小时超时审批
+→ 模型看点与 R2 私有发布
+→ 私人播客库、同步字幕、用量与费用
+```
 
-## 阅读顺序
+已实际完成并发布：
 
-- 先读 `AGENTS.md`：项目沟通规则（禁用编号风格、文档管理规则、测试规范、Git 规范）
-- 再读 `docs/REQUIREMENTS.md`：需求与数据模型（权威文档，已定事项不重议）
-- 然后读 `docs/ARCHITECTURE.md`：四层模块职责划分与文末「待验证事项」
-- 再读 `docs/IMPLEMENTATION_PLAN.md`：阶段划分、任务依赖、产出与验收口径
-- 再读 `docs/TECH_STACK.md`：技术选型、schema 草案、目录拓扑、选型决策记录、待验证项
-- 再读 `docs/NEXT_STEPS.md`：最小 MVP 的落地行动清单（当前推进所依据的清单）
-- 再读 `.agent/pi-durable-vs-langgraph.md`：执行层骨架选型讨论与风险
-- 再读 `.agent/knowledge-base.md`：知识库讨论结论（含未定字段级 gap）
-- 再读 `docs/verification/flow-test.md`：Pi Durable 语义验证与 kill -9 崩溃恢复实验结论
-- 再读 `docs/verification/translate-srt-reuse.md`：skill 复用边界自检结论
-- 最后读代码：`state/` → `pipeline/` → `runner/src/` → `tests/`（顺序即数据契约→流水线工具→执行骨架→测试）
+- Episode 1：《Boss with Jamie Carragher: Xabi Alonso》——审核、模型看点、R2 与本地节目库闭环
+- Episode 2：《Spurs earn deserved win at Chelsea after Penders error and Palmer red》——真实分类、下载、转写、翻译、复核、看点、R2 和节目库全链验收；1904 条字幕、5 个有效看点
 
-## 项目现状
+节目库、登录与权限已实际联调：
 
-### 阶段进度
+- 管理员可访问全部节目
+- 普通用户按 Episode 授权，未授权资源返回 404
+- 已交付节目不再残留在审核箱
+- 发布后修订保留旧当前交付，新版本完整交付后才切换
 
-- 外层五大阶段：最小 MVP → 自动化主链 → 审核与交付 → 长程与沉淀 → 打磨
-- 最小 MVP 内部五阶段：基础架构 ✅ / 流程测试 ✅ / 真实转写 / 翻译与复核 / 收口与回填
-- 当前进度：基础架构、流程测试、ToolSpec 隔离层已完成并提交；**真实转写阶段已完成**——样本期《Boss with Jamie Carragher: Xabi Alonso》全链路跑通：下载固化（Episode id=1，36MB/2249s）→ 真实 Scribe 转写（一次 POST $0.13744，与 usage 实扣一致）→ 词级重组（709 条 en.srt + provenance）→ 体检（merge 不需要，split 仅 #264）。产物在 `var/episodes/1/`。下一步进入「翻译与复核」：子代理接入方式实验 + skill 全流程编排（DeepSeek 凭据已就绪），本仓无未决外部阻塞。
+## 当前代码分层
 
-### 已完成内容（逐模块）
-
-| 模块 | 文件 | 职责 | 测试数 | 运行命令 |
-| --- | --- | --- | --- | --- |
-| 状态存储 | `state/schema.sql`、`state/db.py`、`state/episode.py`、`state/manifest.py`、`state/ledger.py` | SQLite 三表（episode / artifact / ledger）+ WAL/外键/幂等建表；Episode 创建与状态推进；产物清单；intent→outcome 两段式账本（call_ref 唯一，unknown 态供对账不自动重跑） | 9 | `uv run pytest tests/test_state.py` |
-| 下载固化 | `pipeline/download.py` | 跟随 302 下载、sha256 固化、时长读取、首版保护（hash 漂移告警）；含 CLI 端到端 | 5 | `uv run pytest tests/test_download.py` |
-| 词级重组 | `pipeline/wordrender.py` | Scribe 词级 JSON → 一句一条英文 SRT（`[S01] ` 前缀）+ provenance sidecar；时间戳缺失明确失败 | 10 | `uv run pytest tests/test_wordrender.py` |
-| Runner 薄封装 | `runner/src/runner.ts` | 隔离 Pi Durable 实验 API，暴露 submit / resume / continue / checkpoint | 1 | `cd runner && npm test` |
-| ToolSpec 工具契约 | `runner/src/tool-spec.ts` | 工具中立契约（`ToolSpec`）：replay safe/unsafe、execute、extras.memo，业务工具只依赖它 | — | — |
-| pi-durable 适配层 | `runner/src/durable-adapter.ts` | ToolSpec → ToolRegistration 转换；换框架时只重写本文件与 runner.ts | — | — |
-| 单期 conversation | `runner/src/conversation.ts` | download 真实（safe）、transcribe 真实（unsafe，经 `python -m pipeline.scribe` 调 CLI）的流水线工具集 | 4 | `cd runner && npm test` |
-| 流程测试 | `runner/src/semantics.test.ts`、`runner/src/kill9.test.ts`、`runner/src/crash-child.ts` | 进程内语义验证 + kill -9 四崩溃点恢复实验 | 6 | `cd runner && npm test` |
-| skill 复用自检 | `docs/verification/translate-srt-reuse.md` | 两脚本 `--self-test` 通过，复用方式定为「经 bash 调子命令，不 import 为库」 | — | 见常用命令 |
-| Python 环境 | `pyproject.toml`、`uv.lock` | uv + Python 3.12 + pytest + httpx + mutagen | — | `uv run pytest tests/` |
-
-- Python 测试合计：60 个全部通过（state 10 + download 5 + wordrender 10 + scribe 35）
-- Node 测试合计：11 个全部通过（runner 1 + conversation 4 + semantics 2 + kill9 4）
-- 待建文件（已列出但未实现）：`pipeline/orchestrate.py`（translate-srt 全流程编排）
-
-### ToolSpec 工具契约隔离层（已提交 d1438bd）
-
-- 业务工具（`conversation.ts` 的 download/transcribe、`test-tools.ts` 的测试工具）只依赖 `tool-spec.ts` 的中立 `ToolSpec` 契约，零 pi-durable 框架依赖。
-- pi-durable 的 import 收拢到两个文件：`runner.ts` 与 `durable-adapter.ts`。
-- 契约语义（换框架时新实现必须满足）：`replay: "safe"` 崩溃后自动重跑；省略 = unsafe，绝不自动重跑，模型收到 interrupted；`execute` 抛错由框架把错误结果交给模型；`extras.memo` 同名第一次写赢。
-- 验收用例见 `docs/verification/flow-test.md`。
-
-### git 提交状态（已实际读取）
-
-- 历史提交至 `d1438bd`（ToolSpec 隔离层），共 7 个 commit；本会话全部改动已按用户要求撤销提交，保留在工作区待用户审阅，未提交。
-- 待审阅改动：`AGENTS.md`（Git 规范 + 新增「代理不得自行 commit」规则）、`docs/TECH_STACK.md`（待验证项回填 + 转写端点路径修正）、`docs/HANDOFF.md`（本会话任务收官）、新增 `docs/verification/scribe-idempotency-doc-review.md` 与 `docs/verification/scribe-idempotency-controlled-test.md`。
-- 知识库仓（`~/.translate-srt/knowledge`）：init 脚本自带一次提交；我的「移除示例域 seiyuu」提交已撤销，删除暂存中待审阅。
-
-## 本会话完成的任务（两个，均已收官）
-
-### Scribe 幂等键服务端语义查证（已完成：文档 + 受控实测）
-
-背景：`docs/REQUIREMENTS.md` 要求转写调用携带幂等键（episode guid + 音频 hash），重试不产生二次计费。但 `docs/IMPLEMENTATION_PLAN.md` 明确：服务端是否支持、有效期和异常语义必须先查证，不能把本地去重当作服务端不重复计费的证明。
-
-完成状态：两半均已做完。结论——官方文档与受控实测均证实 Scribe 无幂等键机制，「同键重试不重复计费」不成立；凭 `transcription_id` 的 GET 取回路径可用；付费调用自动重试保持关闭。证据与影响见 `docs/verification/scribe-idempotency-doc-review.md`（文档查证）与 `docs/verification/scribe-idempotency-controlled-test.md`（受控实测）。遗留：usage 面板读数待用户核对后回填实测记录。
-
-分两半推进（已归档为验收依据）：
-
-- 文档查证（无需 key，可立即做，结论需用户审阅）
-  - 查官方文档，确认 Scribe 转写接口对幂等键的支持情况与语义边界。
-  - 查证项：请求键是否支持、参数名（header 或 body 字段）、作用域（账号级 / 端点级 / 请求级）、有效期（多久内重发同键视为同一次）、超时后的查询或对账手段（GET transcript by id 能否查到、能否以同键续查）、计费语义（重试同键是否只计一次、键过期后重发是否另计）。
-  - 产出写入 `docs/verification/`，并回填 `docs/TECH_STACK.md` 待验证项。
-  - 文档查证结论是「供应商声称的语义」，仍需用户审阅确认是否接受作为依据，不能替代受控验证。
-
-- 受控验证（需用户配合：Scribe key + 一段短音频）
-  - 用一段短音频做受控调用，验证文档声称的幂等语义在实际行为上成立。
-  - 价格口径：Scribe v2 按音频时长计费（$0.22/小时，2026-11 查证口径），30 秒级短音频成本约 $0.002，可忽略；若需要精确成本，受控验证前按官方定价复核一次。
-  - 重点验证「结果未知时的安全恢复路径」：发出调用后中断，凭同键重发或查询是否不重复计费、能否拿到已有结果。
-  - 短音频不要求是正式样本节目，只要能触发真实转写即可；正式样本节目另属「真实转写」阶段，不在本次范围。
-
-验收口径：
-
-- 不能把本地去重当作服务端不重复计费证明；必须落到「服务端对同键重试/查询的实际行为」。
-- 能证明结果未知时安全恢复，则付费调用自动重试语义成立；否则关闭付费调用自动重试并记录阻塞，不以 mock 成功替代真实能力验收。
-
-### 最小英超知识库 init（已完成）
-
-- 已用 `kb_tools.py init` 建库：默认位置 `~/.translate-srt/`，`status` 通过，独立 git 仓（未落入本项目仓库）；已移除 skill 示例域 seiyuu（提交于知识库仓）。
-- 领域包命名与粒度仍按 `.agent/knowledge-base.md` 未决项处理，本会话只建空骨架。
-- 迁移方式：改 `TRANSLATE_SRT_HOME` 环境变量即可，不复制产物、不改 git 历史。
-- 位置约定与复用边界见 `docs/verification/translate-srt-reuse.md`。
-
-### 需要用户配合 / 决策的点（本次会话范围内，详情见下方「待确认开放问题」）
-
-| 决策点 | 简短说明 |
-| --- | --- |
-| Scribe key 提供时机 | 已解决：已写入 `.env`（`ELEVENLABS_API_KEY`，已 gitignore） |
-| 受控验证是否做 | 已做：短音频由本地 `say` 合成（38.4 秒 WAV），实测完成 |
-| 知识库位置是否用默认 | 已定：默认 `~/.translate-srt/`，init 完成 |
-| usage 面板读数核对 | 受控验证计费口径（约 $0.009）待用户在 ElevenLabs 后台核对后回填实测记录 |
-
-## 关键决策记录（含来源文档）
-
-| 决策 | 结论 | 来源文档 |
+| 分层 | 当前目录 | 当前能力 |
 | --- | --- | --- |
-| 转写客户端 | 直接 HTTP（httpx），不用 ElevenLabs 官方 SDK；便于携带幂等键头做服务端语义验证、原始响应落盘、复用已定 httpx | `docs/TECH_STACK.md` 选型决策记录 |
-| ToolSpec 工具契约隔离层 | 业务工具零框架依赖，pi-durable import 收拢到 runner.ts 与 durable-adapter.ts；换框架只重写这两个文件 | `runner/src/tool-spec.ts`、`runner/src/durable-adapter.ts`、commit d1438bd |
-| 分层-目录映射 | discover=发现层、runner+pipeline=执行层、state=跨层数据契约（schema 归执行层维护）、review+eval=审核层、delivery=交付层；层间只经数据契约与接口边界 | `docs/TECH_STACK.md`、`docs/NEXT_STEPS.md` |
-| Runner 薄封装职责 | 暴露 submit / resume / continue / checkpoint，隔离 Pi Durable 实验 API；业务工具不直接依赖实验接口 | `docs/ARCHITECTURE.md`、`runner/src/runner.ts` |
-| safe / unsafe 工具语义 | safe 崩溃后自动重跑、unsafe 绝不自动重跑且模型收到 interrupted；已由流程测试验证 | `docs/verification/flow-test.md` |
-| 测试文件头场景注释规范 | 每个测试文件开头用几行注释列出模拟场景清单 | `AGENTS.md` 测试规范 |
-| Git 提交前读取规范 | 每次准备提交前先 `git log --oneline` 与 `git status` 实际读取，再决定提交内容与 message | `AGENTS.md` Git 规范 |
-| 文档管理规则 | 需求文档为权威；不轻易新增文档，优先更新既有文档；多轮文档先确认再创建子代理，迭代最多 3 轮 | `AGENTS.md` 项目文档 |
-| 模块级提交规则 | 一个模块代码与测试全过后 commit 一次，message 注明模块与产出 | `docs/NEXT_STEPS.md` 执行约定 |
+| 发现层 | `discover/` | feed 配置、ETag／304、历史基线、guid+feed 去重、可选 Chelsea 分类 |
+| 执行层 | `pipeline/`、`runner/` | 下载、Scribe、词级重组、orchestrate、局部重跑、Runner 派发与调度 |
+| 审核层 | `review/`、`state/` | 审核箱、override、审批、保留待审、发布后修订、用量与费用 |
+| 交付层 | `delivery/` | 看点校验、R2 上传、动态签名、节目库与发布切换 |
+| 数据契约 | `state/`、`state/postgres/` | SQLite 当前业务数据、PostgreSQL 队列／账号／授权、Redis 协调 |
+| 学习资料 | `docs/learning/` | 独立后端连接管理学习模块 |
 
-## 执行纪律（红线）
+### 高并发专项范围
 
-- 最小 MVP 完成前不扩展 feed 调度、不批量触发付费转写。
-- 外部幂等或恢复语义不成立时，自动重试保持关闭并记录阻塞。
-- 提交前先 `git log --oneline` 与 `git status` 实际读取，不凭记忆推断 git 状态。
-- 来源：`docs/IMPLEMENTATION_PLAN.md`「阶段推进与交接」、`AGENTS.md` Git 规范。
+高并发只覆盖以下三条链路，范围与指标见 `docs/HIGH_CONCURRENCY_REQUIREMENTS.md`：
 
-## 待确认开放问题（阻塞型，长期清单）
+- 多期任务并发处理：PostgreSQL `job`、`job_attempt`、`SKIP LOCKED`、幂等、租约和恢复
+- 供应商限流与预算：Redis 令牌桶、owner/TTL 租约、失败关闭、预算与最大 running
+- 多用户只读访问：会话、授权过滤、延迟与状态码验证
 
-| 问题 | 影响 | 推荐默认值 |
-| --- | --- | --- |
-| Scribe API key | 已解决：`.env` 中 `ELEVENLABS_API_KEY`（不入库、不写日志、不进 git） | 环境变量 `ELEVENLABS_API_KEY`，不入库、不写日志、不进 git |
-| 受控验证短音频 | 已解决：本会话用本地 `say` 合成 38.4 秒语音完成实测；正式样本节目另属真实转写阶段 | 一段短音频即可（30 秒级，成本约 $0.002 可忽略）；正式样本节目另属真实转写阶段 |
-| Scribe 计费实测读数 | 已结案（2026-11-06 充值后重测）：PAYG 期 $0.2200/h 零残差吻合官方定价，此前 $0.40/h 系免费计划 credit 折算口径，费用基线维持需求 $0.18/49 分钟，无需重估 | 结案节见 `docs/verification/scribe-idempotency-controlled-test.md` |
-| 需求修订（幂等键不成立） | 查证证实服务端无幂等键，`docs/REQUIREMENTS.md`「重试不产生二次计费」需修订为「本地防重复触发 + 凭 transcription_id 恢复」，待用户确认后改 | 修订提案见 `docs/verification/scribe-idempotency-controlled-test.md`「对项目的影响」 |
-| 模型凭据（翻译快模型、复核同档模型、调研快模型） | 已解决（2026-11-06）：`.env` 中 `DEEPSEEK_API_KEY` 已填并实测可用 | DeepSeek 先行；翻译 `deepseek-flash`、复核 `deepseek-v4-pro`、调研 `deepseek-flash` |
-| 样本节目（一期真实 mp3 或 RSS 链接） | 已选定（2026-11-06）：《Boss with Jamie Carragher: Xabi Alonso》，Sky Sports PL Podcast，2026-10-26，37:29，36MB，卡拉格专访切尔西主帅阿隆索 | enclosure `https://episodes.captivate.fm/episode/8db0bde6-c9cb-43be-92ab-b18987fbdc58.mp3`（feed `https://feeds.captivate.fm/sky-sports-premierleague/`，已实测 200）；转写成本预估 ≈$0.14（$0.22/h）；双人访谈形态，与比赛日多人圆桌的差异不影响下游测试 |
-| 模型路由（具体供应商与型号） | 已定（2026-11-06）：`.env` 路由变量 `PODCAST_MODEL_TRANSLATE/REVIEW/RESEARCH` = `deepseek/deepseek-flash`、`deepseek/deepseek-v4-pro`、`deepseek/deepseek-flash`；换 provider 只改路由行 + 对应 key | 均为推理模型，`effort` 支持 low/high/max（默认 high），批量任务建议 low，接线时定 |
-| 项目命名 | 三者连锁，改名是全局动作 | 按 `podcast_agent` 开工，用户定名后一次性全局重命名；建议在首次真实数据与多期 commit 前定名 |
-| 知识库位置（`TRANSLATE_SRT_HOME`） | 阻塞 match / glossary 与全流程编排（本次只 init，可用默认位置先做） | 独立 git 仓 + 环境变量；缺省 `~/.translate-srt/`；迁移 = 改环境变量，不复制产物、不改 git 历史 |
-| 样本节目说话人身份 | 影响词级重组前缀、术语表、翻译人称 | 词级重组默认输出 `[S01] ` 占位；真名用 `speakers --map` 落实；匿名素材给处置选项，不臆造真名 |
+实际 `drive-pending` 已接入 PostgreSQL 队列，不再把 SQLite execution_lock 当主队列。其他功能以正确性、安全、质量和恢复为主，不设置高 QPS 指标。
 
-## 验收口径
+## 本地实测结果
 
-### 本次会话（已完成，验收依据留档）
+详见 `docs/PERFORMANCE_REPORT.md`；这些是本地 mock／只读结果，不是生产 QPS 或供应商吞吐承诺。
 
-- Scribe 幂等键查证结论已落「服务端对同键重试/查询的实际行为」：请求键不支持（文档零命中 + 实测同键不同 ID）、参数名不适用、作用域/有效期不适用、超时后对账手段 = `transcription_id` + GET（实测可用）、计费语义 = 每请求独立计费无去重；文档查证经用户审阅，受控验证有实测证据。
-- 结论已回填 `docs/TECH_STACK.md` 待验证项，证据位置在 `docs/verification/scribe-idempotency-doc-review.md` 与 `docs/verification/scribe-idempotency-controlled-test.md`。
-- 知识库 init 完成且 `kb_tools.py status` 通过；产物为独立 git 知识库（`~/.translate-srt/`），未落入本项目仓库。
-
-### 最小 MVP 总体（背景口径，非本次全部完成）
-
-- 同一期音频产出英文 SRT、修正稿、中文译文、复核稿、重切分候选、术语表和检查记录；产物真实存在且关联正确。
-- 英文句子边界可回溯词级时间戳；译文与原文对齐，无未解释漏译、时间轴差异或越界插值。
-- 正常完成后重启从 checkpoint 继续，不重复已确认完成的付费步骤；调用已发出但 outcome 未落盘的窗口中断时进入可对账状态而非再次扣费。
-- 审核前没有任何上传或交付动作；人工修改保护要求已纳入后续数据契约。
-- 架构待验证事项有可复现实验结果；仍存在的外部阻塞写明影响，不以 mock 成功替代真实能力验收。
-
-## 接手第一步
-
-- 先 `git log --oneline` + `git status` 实际读取状态：本会话改动全部未提交（待用户审阅），审阅批准后才提交。
-- 计费已核对（日账单）；如需最终归属确认：Request Log 逐请求导出 + 核对账号套餐费率（实测有效单价 ≈ $0.40/h，与文档 $0.22/h 不一致）。
-- 待用户确认需求修订提案（幂等键不成立），改 `docs/REQUIREMENTS.md`。
-- 然后推进「翻译与复核」：真实转写已完成，英文 SRT（709 条）就绪；做子代理接入方式实验（崩溃恢复、成本归属、产物落盘与账本衔接）+ `pipeline/orchestrate.py` skill 全流程编排，speakers 真名映射（S01→Carragher、S02→Alonso）在 skill 的 speakers 步骤落实。
-
-## 接手常用命令
-
-| 用途 | 命令 |
+| 对象 | 当前有效结果 |
 | --- | --- |
-| Python 全部测试（自检） | `uv run pytest tests/`（当前 24 个全过） |
-| Node 类型检查（自检） | `cd runner && npm run typecheck`（当前通过） |
-| Node 全部测试（自检） | `cd runner && npm test`（当前 10 个全过） |
-| skill 未误改回归（自检） | `uv run python skills/translate-srt/scripts/srt_tools.py --self-test`、`uv run python skills/translate-srt/scripts/kb_tools.py --self-test` |
-| 知识库 init（任务命令） | `uv run python skills/translate-srt/scripts/kb_tools.py init`（建空库骨架，默认 `~/.translate-srt/` 或 `--home DIR`） |
-| 知识库状态（任务命令） | `uv run python skills/translate-srt/scripts/kb_tools.py status`（确认路径解析、领域条目数与 git 状态） |
+| PostgreSQL 队列 | 1000 个 fake 任务、8 worker；1000.77 任务/秒；领取 p95 6.919ms；零错误 |
+| 管理 API | 300 个只读请求、16 并发；256.13 QPS；全部 HTTP 200；p95 94.247ms |
+| Redis 闸门 | 1000 次 acquire/release、32 并发；2520.70 次/秒；零错误 |
+
+真实队列与权限测试另已验证：多 worker 不重复领取、预算超限不消耗 attempts、授权过滤生效、会话过期／撤销生效。
+
+## 当前测试状态
+
+- Python：**166 passed，20 skipped**（PostgreSQL／Redis 测试默认需要显式启用本地服务）
+- Runner：**28 passed**
+- Review：**14 passed**
+- translate-srt 的两个 self-test 已通过
+- `git diff --check` 已通过
+
+真实 PostgreSQL／Redis 测试使用独立本地测试库或随机 key 前缀，不清空业务库，不发起真实付费调用。
+
+## 运行入口
+
+### 本地开发服务
+
+```bash
+docker compose up -d postgres redis
+uv run python -m state.postgres.migrations
+uv run python -m uvicorn review.api:app --host 127.0.0.1 --port 8788
+cd review && npm start
+```
+
+Fastify 默认 `127.0.0.1:8787`。多用户模式需要 `PODCAST_MULTIUSER=1`、一致的 `PODCAST_DOMAIN_URL` 和 `PODCAST_DOMAIN_TOKEN`。生产 HTTPS 必须启用 `PODCAST_AUTH_SECURE_COOKIE=1`，不得沿用演示弱密码。
+
+### 定时任务命令
+
+```bash
+uv run python -m discover.cli poll --classify
+node --experimental-strip-types runner/src/drive-pending.ts
+uv run python -m review.cli auto-approve-due
+node --experimental-strip-types runner/src/drive-delivery.ts
+```
+
+这些命令已具备，但实际系统 cron 尚未安装。无任务时应退出，不启动常驻空转 worker。
+
+### 常用自检
+
+```bash
+uv run pytest tests/
+cd runner && npm run typecheck && npm test
+cd review && npm run typecheck && npm test
+uv run python skills/translate-srt/scripts/srt_tools.py --self-test
+uv run python skills/translate-srt/scripts/kb_tools.py --self-test
+```
+
+## 文档索引
+
+### 当前权威文档
+
+- 需求：`docs/REQUIREMENTS.md`
+- 架构：`docs/ARCHITECTURE.md`
+- 实施计划：`docs/IMPLEMENTATION_PLAN.md`
+- 技术栈：`docs/TECH_STACK.md`
+- 当前全景：`docs/ROADMAP.md`
+- 表结构与代码入口：`docs/DATA_MODEL.md`
+- 接口清单：`docs/API_REFERENCE.md`
+- 高并发范围：`docs/HIGH_CONCURRENCY_REQUIREMENTS.md`
+- 压测结果：`docs/PERFORMANCE_REPORT.md`
+- Redis 实现：`docs/REDIS_COORDINATION.md`
+
+### 验证与实验记录
+
+以下文档承载唯一实验或验收证据，不因清理历史交接而删除：
+
+- `docs/verification/flow-test.md`：Durable、safe/unsafe、checkpoint、kill -9 与恢复
+- `docs/verification/subagent-dispatch.md`：子代理嵌套任务、去重与账本接缝
+- `docs/verification/scribe-idempotency-doc-review.md`：Scribe 无服务端幂等键的文档查证
+- `docs/verification/scribe-idempotency-controlled-test.md`：Scribe 受控调用、计费与恢复证据
+- `docs/verification/mvp-cost-baseline.md`：真实 MVP 成本基线
+- `docs/verification/translate-srt-reuse.md`：skill 复用边界与自检
+
+### 设计与学习
+
+- `.agent/high-concurrency-architecture.md`：高并发完整设计，按用户决定暂不提交
+- `docs/learning/connection-management.md`：独立后端连接管理学习模块
+
+## 真实运行恢复记录
+
+- Episode 2 的首次 Scribe 代理调用发生 RemoteProtocolError，保留 unknown 账本；用户授权后使用显式 `:rebill:2` 直连成功，原 unknown 不覆盖。
+- 翻译、复核和看点的 unknown 均凭既有 terminal 子任务、真实产物和用量核销，未盲目重发。
+- 模型原稿中超出音频范围的看点已保留原稿备份后人工移除。
+- 样本数据库备份：`var/backups/podcast_agent_before_demo_20261109T092309Z.db`、`var/backups/podcast_agent_before_auto_20261109T165308Z.db`。
+- 手写测试看点备份：`var/backups/highlights-demo-20261109T092506Z/`。
+- 模型原稿备份：`var/backups/episode2-highlights-model-original.json`。
+
+## 剩余工作与当前边界
+
+- VPS、HTTPS、生产强密码、监控告警、备份策略与真实 cron 部署
+- 生产环境下重新测量 API、队列、Redis、带宽和故障接管
+- 按真实供应商账号配额校准限流，不用本地数字代替供应商能力
+- 真实付费局部重跑需要受控验收，当前以 faux 测试为主
+- 评测机制继续后置，不把未修改条目自动当成正确样本
+- 不做公开再分发、公共注册或无限付费任务
+- 高并发专项不扩展到所有页面或所有接口
+
+## Git 纪律
+
+- 代理不自行执行 git commit；用户自行提交或明确批准后由代理执行。
+- 提交前实际读取 `git status` 与 `git log --oneline`，按模块内聚提交。
+- 不提交 `.env`、`var/`、真实媒体、凭据或 `.agent/tmp/` 临时文件。
+- `.agent/high-concurrency-architecture.md` 当前按用户决定暂不提交；`.vscode/` 为个人编辑器配置，不需要提交。

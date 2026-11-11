@@ -1,6 +1,8 @@
 # 技术栈与工程设计
 
 > 定位：记录本项目的技术选型与工程设计细节。模块归属以 `ARCHITECTURE.md` 为准，需求以 `REQUIREMENTS.md` 为准，阶段安排与验证时机以 `IMPLEMENTATION_PLAN.md` 为准。本文不重议已定事项；带「草案」标记的内容待对应实施阶段定稿，带「待验证」标记的内容由最小 MVP 验证后回填。
+>
+> 接口清单与代码入口见 `docs/API_REFERENCE.md`；逐表字段见 `docs/DATA_MODEL.md`；高并发专项范围与验收指标见 `docs/HIGH_CONCURRENCY_REQUIREMENTS.md`。
 
 ## 状态标记约定
 
@@ -23,7 +25,7 @@
 | 审核层 | 静态审核箱与审核页 + Fastify HTTP 适配 + Python 审核领域与 SQLite 事务 + 12 小时超时自动审批 + override 表；评测后置 | ARCHITECTURE / REQUIREMENTS / 代码实现规格 |
 | 交付层 | 私人播客库 + 模板生成 + boto3 上传 R2 + 动态 S3 签名 URL（自研）；使用 Cloudflare R2，不用 WebDAV | ARCHITECTURE / REQUIREMENTS |
 | 知识库 | 纯文本 + 独立 git 仓库，kb_tools.py 读写，项目代码之外 | REQUIREMENTS / skill |
-| 流程状态存储 | SQLite 存程序读写数据（Episode、override、审批、发布、账本等），知识库不存流程状态；评测数据后续加入 | REQUIREMENTS / ARCHITECTURE |
+| 流程状态存储 | 当前 SQLite；并发改造新增 PostgreSQL 持久化队列与业务表，Redis 只存短期协调数据 | REQUIREMENTS / ARCHITECTURE / `.agent/high-concurrency-architecture.md` |
 
 ## 语言与运行时（草案）
 
@@ -48,7 +50,7 @@
 
 ## 存储与 schema（草案）
 
-SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技术项与讨论结论」）。表结构与字段在自动化主链阶段与状态机、账本汇总口径一起评审定稿。
+SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技术项与讨论结论」）。逐表字段、约束、职责与代码文件见 `docs/DATA_MODEL.md`；PostgreSQL 计划表与当前实现分开标记。
 
 | 数据 | 关键字段 | 来源 |
 | --- | --- | --- |
@@ -131,6 +133,11 @@ node --experimental-strip-types runner/src/drive-delivery.ts
 | 转写客户端 | ElevenLabs 官方 SDK / 直接 HTTP | 直接 HTTP（httpx） | 本项目仅用 Scribe 一小面（现行文档端点 `POST /v1/speech-to-text` + `GET /v1/speech-to-text/transcripts/{id}`，见幂等键查证；无幂等键可用），REST 与 SDK 均可获取 word 级时间戳与说话人分离；直接 HTTP 便于原始响应落盘、复用已定 httpx，避免大而全 SDK 的版本 churn 与无关升级牵连 | 已定 |
 | RSS 解析 | feedparser / 标准库 XML | feedparser（当前锁文件版本） | feedparser 只解析响应 bytes，httpx 负责条件请求；条目 id/guid、enclosures、published_parsed 用法已经 Context7 核对 | 已定 |
 | 分类客户端 | 供应商 SDK / 直接 HTTP | DeepSeek 直接 HTTP + JSON mode | 分类只发标题／简介；`response_format=json_object` 与 usage 字段按官方当前文档实现；call_ref 先落 intent，失败／unknown 不自动重发 | 已定 |
+| PostgreSQL 队列 | psycopg 3 + 原生 SQL | `FOR UPDATE SKIP LOCKED` + JSONB + 版本迁移 | 支持幂等入队、多 worker、租约接管、尝试历史与 SQLite 对账迁移；`job_cli.py` 已接入实际 `drive-pending`，所有事务显式提交；事务和 Jsonb 用法已经 Context7 核对 | 已定（本地真实测试与队列接入通过） |
+| 长驻领域服务 | 每请求 Python CLI / 长驻 FastAPI RPC | FastAPI + Uvicorn + 内部令牌 | 保留 Python 审核／交付领域规则，Fastify 改为内部 HTTP 调用；启动时一次迁移，同步 def 端点在线程池执行；lifespan/TestClient 用法已经 Context7 核对 | 已定（真实 RPC 联调通过） |
+| Redis 分布式协调 | 进程内限流 / Redis Lua + Hash 租约 | 令牌桶 + owner/TTL 并发租约 | 使用 Redis TIME、原子 Lua、owner 释放与失败关闭；接入 Scribe、分类与真实 Runner 子代理；权威状态仍在数据库，文档见 `docs/REDIS_COORDINATION.md` | 已定（真实 Redis 测试通过） |
+| 多用户认证与授权 | 共享 Basic Auth / PostgreSQL 账号会话 + Episode 授权 | Argon2id 密码哈希、随机会话 token 哈希、resource_grant、预算与审计 | 登录走 FastAPI，Fastify 处理 Cookie 与同源写保护；owner/admin 放行，普通用户按 Episode 授权；SQLite 业务与 PostgreSQL 授权分流，SQL 占位符与 IN 查询兼容 | 已定（真实端到端验证通过） |
+| 压测与性能证据 | 本地脚本 + 固定负载 + JSON 结果 | `docs/PERFORMANCE_REPORT.md` | 队列 1000 任务／8 worker、管理 API 300 请求／16 并发、Redis 1000 次闸门调用／32 并发；全部零错误，报告明确区分本地 mock 与生产能力 | 已定（本地实测通过） |
 | 审核服务接缝 | Node 直写 SQLite / Fastify + Python 领域 CLI | Fastify v5 + Python stdlib sqlite3 | 审核、override、审批与发布事务只在 Python 实现一次；Node 负责 HTTP、鉴权、静态页与音频流，避免原生 SQLite 依赖和双份状态机；Fastify v5 完整 JSON Schema 与 hooks 文档已经 Context7 核对 | 已定 |
 | R2 客户端 | boto3 S3 兼容 API | boto3（当前锁文件版本） | put_object 流式 Body、HEAD ContentLength + sha256 metadata、get_object 预签名；使用内容寻址 key，HEAD 不一致拒绝覆盖；API 用法已经 Context7 核对，真实 R2 联调单独验收 | 已定 |
 | 其余待选库 | 见候选表 | 未定 | 分别在标注的决策时机完成 | 待选 |
