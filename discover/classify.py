@@ -15,6 +15,7 @@ from typing import Optional
 import httpx
 
 from state import ledger
+from pipeline.provider_gate import acquire_or_raise
 
 
 class ClassificationError(RuntimeError):
@@ -71,16 +72,22 @@ class DeepSeekClassifier:
             raise ClassificationError(
                 f"分类调用已存在但未形成可用候选结果，status={existing['status']}；禁止自动重发"
             )
-        ledger.record_intent(
-            conn,
-            episode_id=None,
-            purpose="classify",
-            provider="deepseek",
-            model=self.model,
-            usage_basis="phase=intent",
-            amount_est=None,
-            call_ref=call_ref,
-        )
+        # 先获得分布式许可，再记录付费 intent。
+        provider_gate, gate_decision = acquire_or_raise("deepseek")
+        try:
+            ledger.record_intent(
+                conn,
+                episode_id=None,
+                purpose="classify",
+                provider="deepseek",
+                model=self.model,
+                usage_basis="phase=intent",
+                amount_est=None,
+                call_ref=call_ref,
+            )
+        except Exception:
+            provider_gate.release("deepseek", gate_decision.owner)
+            raise
         request_payload = {
             "model": self.model,
             "messages": [
@@ -107,6 +114,8 @@ class DeepSeekClassifier:
         except httpx.HTTPError as exc:
             ledger.record_outcome(conn, call_ref, status="unknown")
             raise ClassificationError("分类网络结果未知，禁止自动重试") from exc
+        finally:
+            provider_gate.release("deepseek", gate_decision.owner)
         if response.status_code != 200:
             ledger.record_outcome(conn, call_ref, status="failed")
             raise ClassificationError(f"分类 HTTP {response.status_code}")

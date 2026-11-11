@@ -8,7 +8,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Optional
 
-from delivery import library, publish
+from delivery import commands
 from delivery.errors import DeliveryError
 from delivery.highlights import HighlightsError
 from pipeline.override import OverrideError
@@ -49,16 +49,7 @@ def main(argv=None) -> int:
         now = args.now or datetime.now(timezone.utc).isoformat(timespec="seconds")
         conn = _open(args.db)
         try:
-            if args.command == "publish-approved":
-                data = publish.publish_approved(conn, now=now)
-            elif args.command == "mark-highlights-failed":
-                data = publish.mark_highlights_failed(
-                    conn, approval_id=payload["approval_id"], error=payload["error"], now=now
-                )
-            elif args.command == "library":
-                data = library.list_episodes(conn)
-            else:
-                data = library.episode_detail(conn, episode_id=payload["episode_id"])
+            data = commands.dispatch(conn, args.command, payload, now=now)
         finally:
             conn.close()
         print(json.dumps({"status": "success", "data": data}, ensure_ascii=False))

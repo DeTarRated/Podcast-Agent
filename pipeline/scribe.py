@@ -24,6 +24,7 @@ from urllib.parse import quote
 import httpx
 
 from pipeline.download import sha256_file
+from pipeline.provider_gate import acquire_or_raise
 from state import db, episode, ledger, manifest
 
 API_BASE = "https://api.elevenlabs.io"
@@ -234,6 +235,8 @@ def transcribe(
     api_key = _require_api_key()
     timeout = _timeout(duration)
     amount = duration / 3600 * USD_PER_HOUR
+    # 先过分布式限流／并发闸门，再写付费 intent；被限流时不产生调用记录或外部请求。
+    provider_gate, gate_decision = acquire_or_raise("scribe")
     try:
         ledger.record_intent(
             conn,
@@ -246,17 +249,22 @@ def transcribe(
             call_ref=call_ref,
         )
     except sqlite3.IntegrityError:
+        provider_gate.release("scribe", gate_decision.owner)
         return ScribeResult(
             status="duplicate",
             call_ref=call_ref,
             episode_id=episode_id,
             error="call_ref UNIQUE 冲突（并发重复触发），未发起付费调用",
         )
+    except Exception:
+        provider_gate.release("scribe", gate_decision.owner)
+        raise
 
-    with open(audio_path, "rb") as audio_file:
-        with _http_client(transport, timeout, trust_env) as client:
-            try:
-                resp = client.post(
+    try:
+        with open(audio_path, "rb") as audio_file:
+            with _http_client(transport, timeout, trust_env) as client:
+                try:
+                    resp = client.post(
                     TRANSCRIBE_URL,
                     headers={"xi-api-key": api_key},
                     data={
@@ -267,12 +275,14 @@ def transcribe(
                     },
                     files={"file": (audio_path.name, audio_file, "audio/mpeg")},
                 )
-            except httpx.RequestError as exc:
-                ledger.record_outcome(conn, call_ref, status="unknown")
-                return ScribeResult(
-                    status="unknown", call_ref=call_ref, episode_id=episode_id,
-                    error=_error_summary(exc),
-                )
+                except httpx.RequestError as exc:
+                    ledger.record_outcome(conn, call_ref, status="unknown")
+                    return ScribeResult(
+                        status="unknown", call_ref=call_ref, episode_id=episode_id,
+                        error=_error_summary(exc),
+                    )
+    finally:
+        provider_gate.release("scribe", gate_decision.owner)
 
     if resp.status_code != 200:
         ledger.record_outcome(conn, call_ref, status="failed")

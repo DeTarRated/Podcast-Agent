@@ -9,6 +9,7 @@ from delivery.errors import DeliveryError
 from delivery.r2 import R2Settings, R2Store
 from pipeline import override as srt_override
 from state import review_state
+from state.compat import id_in
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -18,18 +19,24 @@ def _path(row: sqlite3.Row) -> Path:
     return path if path.is_absolute() else REPO_ROOT / path
 
 
-def list_episodes(conn: sqlite3.Connection) -> dict:
+def list_episodes(conn: sqlite3.Connection, *, allowed_ids=None) -> dict:
+    if allowed_ids is not None:
+        filter_sql, filter_params = id_in(conn, "d.episode_id", allowed_ids)
+        filter_sql = f" AND {filter_sql}"
+    else:
+        filter_sql, filter_params = "", ()
     rows = conn.execute(
-        """
+        f"""
         SELECT d.id AS delivery_id, d.highlights_json, d.subtitle_key,
                e.id, e.guid, e.feed, e.title, e.published_at, e.duration_secs,
                e.status AS episode_status, a.review_revision_id, a.sha256
         FROM delivery d
         JOIN episode e ON e.id = d.episode_id
         JOIN approval a ON a.id = d.approval_id
-        WHERE d.is_current = 1 AND d.status = 'delivered'
+        WHERE d.is_current = 1 AND d.status = 'delivered' {filter_sql}
         ORDER BY e.published_at DESC, e.id DESC
-        """
+        """,
+        filter_params,
     ).fetchall()
     items = []
     for row in rows:
@@ -52,7 +59,9 @@ def list_episodes(conn: sqlite3.Connection) -> dict:
     return {"items": items, "count": len(items)}
 
 
-def _current(conn: sqlite3.Connection, episode_id: int) -> sqlite3.Row:
+def _current(conn: sqlite3.Connection, episode_id: int, *, allowed_ids=None) -> sqlite3.Row:
+    if allowed_ids is not None and episode_id not in set(allowed_ids):
+        raise DeliveryError("not_found", "当前发布节目不存在或无权访问")
     row = conn.execute(
         """
         SELECT
@@ -72,8 +81,8 @@ def _current(conn: sqlite3.Connection, episode_id: int) -> sqlite3.Row:
     return row
 
 
-def episode_detail(conn: sqlite3.Connection, *, episode_id: int, store=None) -> dict:
-    row = _current(conn, episode_id)
+def episode_detail(conn: sqlite3.Connection, *, episode_id: int, store=None, allowed_ids=None) -> dict:
+    row = _current(conn, episode_id, allowed_ids=allowed_ids)
     subtitle_path = _path(row)
     if not subtitle_path.is_file():
         raise DeliveryError("artifact_mismatch", "当前发布字幕文件不存在")

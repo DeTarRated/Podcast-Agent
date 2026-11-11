@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
+import { acquireProviderGate, releaseProviderGate } from "./provider-gate.ts";
 import { defineTask } from "@earendil-works/pi-durable";
 import type { Model } from "@earendil-works/pi-ai";
 
@@ -160,14 +161,21 @@ async function runSubagent(
         ? `节目元数据与参考：\n${references}\n\n已批准字幕：\n${sourceText}`
         : `调研以下缺口：\n${sourceText}`;
 
-  const message = (await models.completeSimple(
-    model,
-    { systemPrompt, messages: [{ role: "user", content: userContent, timestamp: Date.now() }] },
-    {},
-  )) as {
+  // 只对真实模型调用使用分布式闸门；behaviors mock 已在前面返回，不依赖 Redis。
+  const gateOwner = await acquireProviderGate(input.model.provider);
+  let message: {
     content: Array<{ type: string; text?: string }>;
     usage: { input: number; output: number; cacheRead: number; totalTokens: number; cost: { total: number; totalFromProvider?: boolean } };
   };
+  try {
+    message = (await models.completeSimple(
+      model,
+      { systemPrompt, messages: [{ role: "user", content: userContent, timestamp: Date.now() }] },
+      {},
+    )) as any;
+  } finally {
+    await releaseProviderGate(input.model.provider, gateOwner);
+  }
 
   const output = message.content
     .filter((c) => c.type === "text")
