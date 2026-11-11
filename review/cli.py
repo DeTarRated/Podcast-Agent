@@ -9,6 +9,7 @@ from typing import Optional
 
 from review import queries, service
 from state import db, ledger_report
+from state.postgres.user import allowed_resource_ids, can_access
 
 
 def _payload() -> dict:
@@ -29,7 +30,29 @@ def _open(path: Optional[str]) -> sqlite3.Connection:
     return db.open_default()
 
 
-def _dispatch(conn: sqlite3.Connection, command: str, payload: dict, now: str) -> dict:
+def _allowed_ids(conn, payload):
+    user_id = payload.get("_user_id")
+    if user_id is None:
+        return None
+    return allowed_resource_ids(conn, user_id=user_id, resource_type="episode", permission="read")
+
+
+def _authorize_episode(conn, payload, permission: str) -> None:
+    user_id = payload.get("_user_id")
+    if user_id is None:
+        return
+    if not can_access(
+        conn,
+        user_id=user_id,
+        resource_type="episode",
+        resource_id=payload["episode_id"],
+        permission=permission,
+    ):
+        raise ReviewError("not_found", "节目不存在或无权访问")
+
+
+def dispatch(conn: sqlite3.Connection, command: str, payload: dict, now: str) -> dict:
+    allowed_ids = _allowed_ids(conn, payload)
     if command == "usage-report":
         return ledger_report.usage_report(
             conn,
@@ -38,14 +61,18 @@ def _dispatch(conn: sqlite3.Connection, command: str, payload: dict, now: str) -
             status=payload.get("status"),
             provider=payload.get("provider"),
             limit=payload.get("limit", 500),
+            episode_ids=allowed_ids,
         )
     if command == "inbox":
-        return queries.inbox(conn)
+        return queries.inbox(conn, allowed_ids=allowed_ids)
     if command == "detail":
-        return queries.detail(conn, payload["episode_id"])
+        _authorize_episode(conn, payload, "read")
+        return queries.detail(conn, payload["episode_id"], allowed_ids=allowed_ids)
     if command == "media-info":
+        _authorize_episode(conn, payload, "read")
         return queries.media_info(conn, payload["episode_id"])
     if command == "create-revision":
+        _authorize_episode(conn, payload, "review")
         return service.create_review_revision(
             conn,
             episode_id=payload["episode_id"],
@@ -56,6 +83,7 @@ def _dispatch(conn: sqlite3.Connection, command: str, payload: dict, now: str) -
             now=now,
         )
     if command == "save-override":
+        _authorize_episode(conn, payload, "review")
         return service.save_override(
             conn,
             episode_id=payload["episode_id"],
@@ -72,6 +100,7 @@ def _dispatch(conn: sqlite3.Connection, command: str, payload: dict, now: str) -
             now=now,
         )
     if command == "select-variant":
+        _authorize_episode(conn, payload, "review")
         return service.select_variant(
             conn,
             episode_id=payload["episode_id"],
@@ -80,10 +109,12 @@ def _dispatch(conn: sqlite3.Connection, command: str, payload: dict, now: str) -
             now=now,
         )
     if command == "hold":
+        _authorize_episode(conn, payload, "review")
         return service.hold_review(
             conn, episode_id=payload["episode_id"], base_revision_id=payload["base_revision_id"]
         )
     if command == "resume":
+        _authorize_episode(conn, payload, "review")
         return service.resume_review(
             conn,
             episode_id=payload["episode_id"],
@@ -91,6 +122,7 @@ def _dispatch(conn: sqlite3.Connection, command: str, payload: dict, now: str) -
             now=now,
         )
     if command == "approve":
+        _authorize_episode(conn, payload, "approve")
         return service.approve(
             conn,
             episode_id=payload["episode_id"],
@@ -100,6 +132,7 @@ def _dispatch(conn: sqlite3.Connection, command: str, payload: dict, now: str) -
             now=now,
         )
     if command == "reject":
+        _authorize_episode(conn, payload, "review")
         return service.reject(
             conn,
             episode_id=payload["episode_id"],
@@ -110,6 +143,7 @@ def _dispatch(conn: sqlite3.Connection, command: str, payload: dict, now: str) -
             now=now,
         )
     if command == "revise-published":
+        _authorize_episode(conn, payload, "review")
         return service.revise_published(
             conn,
             episode_id=payload["episode_id"],
@@ -117,6 +151,8 @@ def _dispatch(conn: sqlite3.Connection, command: str, payload: dict, now: str) -
             now=now,
         )
     if command == "auto-approve-due":
+        if payload.get("_user_id") is not None and payload.get("_user_role") not in ("owner", "admin"):
+            raise ReviewError("invalid_state", "自动审批只允许管理员")
         return service.auto_approve_due(conn, now=now)
     raise ValueError(f"未知 review command: {command}")
 
@@ -132,7 +168,7 @@ def main(argv=None) -> int:
         now = service._canonical_time(args.now or service.utcnow_iso())
         conn = _open(args.db)
         try:
-            data = _dispatch(conn, args.command, payload, now)
+            data = dispatch(conn, args.command, payload, now)
         finally:
             conn.close()
         if args.command in {"save-override", "select-variant"} and data.get("has_conflicts"):

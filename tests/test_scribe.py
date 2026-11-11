@@ -53,6 +53,13 @@ def _isolated_env(monkeypatch):
     """测试不读项目根 .env，key 用假值，绝不发真实请求。"""
     monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
     monkeypatch.setattr(scribe, "_DOTENV_LOADED", True)
+    class FakeGate:
+        def release(self, provider, owner):
+            return True
+    monkeypatch.setattr(
+        scribe, "acquire_or_raise",
+        lambda provider: (FakeGate(), type("Decision", (), {"owner": "test-owner"})()),
+    )
 
 
 @pytest.fixture()

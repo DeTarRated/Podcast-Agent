@@ -960,7 +960,18 @@ def inbox(conn: sqlite3.Connection) -> dict:
             ) AS delivery_status
         FROM episode e
         JOIN review_revision r ON r.episode_id = e.id AND r.is_current = 1
-        WHERE e.status IN ('reviewing','rejected','approved')
+        WHERE (
+            e.status IN ('reviewing','rejected')
+            OR (
+                e.status = 'approved'
+                AND NOT EXISTS (
+                    SELECT 1 FROM delivery d
+                    WHERE d.episode_id = e.id
+                      AND d.is_current = 1
+                      AND d.status = 'delivered'
+                )
+            )
+        )
         ORDER BY e.published_at DESC, e.id DESC
         """
     ).fetchall()

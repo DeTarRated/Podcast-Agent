@@ -25,6 +25,17 @@ RSS = """<rss version="2.0"><channel><title>Test</title>
 </channel></rss>"""
 
 
+@pytest.fixture(autouse=True)
+def _fake_provider_gate(monkeypatch):
+    class FakeGate:
+        def release(self, provider, owner):
+            return True
+    monkeypatch.setattr(
+        "discover.classify.acquire_or_raise",
+        lambda provider: (FakeGate(), type("Decision", (), {"owner": "test-owner"})()),
+    )
+
+
 @pytest.fixture()
 def conn(tmp_path):
     connection = db.connect(tmp_path / "classify.db")

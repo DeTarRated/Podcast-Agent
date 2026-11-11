@@ -462,6 +462,14 @@ def test_revise_approved_supersedes_old_delivery_eligibility(conn, tmp_path):
     assert episode.get(conn, seeded["episode_id"])["status"] == "reviewing"
 
 
+def test_inbox_excludes_current_delivered_even_if_episode_status_is_approved(conn, tmp_path):
+    seeded = _seed_episode(conn, tmp_path)
+    _mark_delivered(conn, seeded)
+    conn.execute("UPDATE episode SET status='approved' WHERE id=?", (seeded["episode_id"],))
+    conn.commit()
+    assert service.inbox(conn)["count"] == 0
+
+
 def test_revise_delivered_keeps_old_current_delivery(conn, tmp_path):
     seeded = _seed_episode(conn, tmp_path)
     delivery_id = _mark_delivered(conn, seeded)

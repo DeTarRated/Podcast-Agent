@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 
-import { createAuthHook, type AuthConfig } from "./auth.ts";
+import { createAuthHook, loginWithDomain, type AuthConfig } from "./auth.ts";
 import { sendLocalAudio, type MediaInfo } from "./media.ts";
 import { PythonCommandError, runPython, type PythonRunner } from "./python.ts";
 
@@ -116,6 +116,9 @@ export interface AppOptions {
   pythonRunner?: PythonRunner;
   dbPath?: string;
   now?: string;
+  domainUrl?: string;
+  domainToken?: string;
+  multiUser?: boolean;
   logger?: boolean;
 }
 
@@ -124,21 +127,37 @@ function requestId(request: FastifyRequest): string {
 }
 
 export function buildApp(options: AppOptions = {}): FastifyInstance {
-  const auth = options.auth ?? {
-    user: process.env.PODCAST_REVIEW_USER ?? "",
-    password: process.env.PODCAST_REVIEW_PASSWORD ?? "",
+  const auth = {
+    user: options.auth?.user ?? process.env.PODCAST_REVIEW_USER ?? "",
+    password: options.auth?.password ?? process.env.PODCAST_REVIEW_PASSWORD ?? "",
+    domainUrl: options.domainUrl ?? options.auth?.domainUrl ?? process.env.PODCAST_DOMAIN_URL,
+    domainToken: options.domainToken ?? options.auth?.domainToken ?? process.env.PODCAST_DOMAIN_TOKEN,
+    multiUser: options.multiUser ?? options.auth?.multiUser ?? process.env.PODCAST_MULTIUSER === "1",
   };
-  if (!auth.user || !auth.password) {
+  if (process.env.PODCAST_MULTIUSER !== "1" && (!auth.user || !auth.password)) {
     throw new Error("缺少 PODCAST_REVIEW_USER / PODCAST_REVIEW_PASSWORD");
   }
   const app = Fastify({ logger: options.logger ?? false });
   const runner = options.pythonRunner ?? runPython;
-  const call = <T = unknown>(command: string, payload: Record<string, unknown>): Promise<T> =>
-    runner(command, payload, { dbPath: options.dbPath, now: options.now });
-  const deliveryCall = <T = unknown>(command: string, payload: Record<string, unknown>): Promise<T> =>
-    runner(command, payload, { dbPath: options.dbPath, now: options.now, module: "delivery.cli" });
+  const scopedPayload = (request: FastifyRequest | undefined, payload: Record<string, unknown>) => {
+    const user = request?.user;
+    return user
+      ? { ...payload, _user_id: user.id, _user_role: user.role }
+      : payload;
+  };
+  const call = <T = unknown>(command: string, payload: Record<string, unknown>, request?: FastifyRequest): Promise<T> =>
+    runner(command, scopedPayload(request, payload), {
+      dbPath: options.dbPath, now: options.now,
+      domainUrl: options.domainUrl, domainToken: options.domainToken,
+    });
+  const deliveryCall = <T = unknown>(command: string, payload: Record<string, unknown>, request?: FastifyRequest): Promise<T> =>
+    runner(command, scopedPayload(request, payload), {
+      dbPath: options.dbPath, now: options.now, module: "delivery.cli",
+      domainUrl: options.domainUrl, domainToken: options.domainToken,
+    });
 
   app.addHook("onRequest", createAuthHook(auth));
+  app.post("/login", (request, reply) => loginWithDomain(auth, request, reply));
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof PythonCommandError) {
       const status = errorStatus[error.code] ?? 500;
@@ -175,16 +194,16 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
         status: query.status,
         provider: query.provider,
         limit: query.limit,
-      });
+      }, request);
     },
   );
-  app.get("/api/review/episodes", async () => call("inbox", {}));
+  app.get("/api/review/episodes", async (request) => call("inbox", {}, request));
   app.get(
     "/api/episodes/:episodeId/review",
     { schema: { params: episodeParams } },
     async (request) => {
       const { episodeId } = request.params as { episodeId: number };
-      return call("detail", { episode_id: episodeId });
+      return call("detail", { episode_id: episodeId }, request);
     },
   );
 
@@ -206,7 +225,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
         supersedes_override_id: body.supersedesOverrideId ?? null,
         retracted: body.retracted ?? false,
         request_id: requestId(request),
-      });
+      }, request);
     },
   );
 
@@ -220,7 +239,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
         episode_id: episodeId,
         base_revision_id: body.baseRevisionId,
         variant: body.variant,
-      });
+      }, request);
     },
   );
 
@@ -235,7 +254,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
         base_revision_id: baseRevisionId,
         method: "manual",
         request_id: requestId(request),
-      });
+      }, request);
     },
   );
 
@@ -245,7 +264,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     async (request) => {
       const { episodeId } = request.params as { episodeId: number };
       const { baseRevisionId } = request.body as { baseRevisionId: number };
-      return call("hold", { episode_id: episodeId, base_revision_id: baseRevisionId });
+      return call("hold", { episode_id: episodeId, base_revision_id: baseRevisionId }, request);
     },
   );
 
@@ -255,7 +274,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     async (request) => {
       const { episodeId } = request.params as { episodeId: number };
       const { baseRevisionId } = request.body as { baseRevisionId: number };
-      return call("resume", { episode_id: episodeId, base_revision_id: baseRevisionId });
+      return call("resume", { episode_id: episodeId, base_revision_id: baseRevisionId }, request);
     },
   );
 
@@ -275,7 +294,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
         reason: body.reason,
         ranges: body.ranges.map((range) => ({ start_ms: range.startMs, end_ms: range.endMs })),
         request_id: requestId(request),
-      });
+      }, request);
     },
   );
 
@@ -288,17 +307,17 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
       return call("revise-published", {
         episode_id: episodeId,
         base_revision_id: baseRevisionId,
-      });
+      }, request);
     },
   );
 
-  app.get("/api/library/episodes", async () => deliveryCall("library", {}));
+  app.get("/api/library/episodes", async (request) => deliveryCall("library", {}, request));
   app.get(
     "/api/library/episodes/:episodeId",
     { schema: { params: episodeParams } },
     async (request) => {
       const { episodeId } = request.params as { episodeId: number };
-      return deliveryCall("detail", { episode_id: episodeId });
+      return deliveryCall("detail", { episode_id: episodeId }, request);
     },
   );
 
@@ -307,7 +326,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     { schema: { params: episodeParams } },
     async (request, reply) => {
       const { episodeId } = request.params as { episodeId: number };
-      const info = await call<MediaInfo>("media-info", { episode_id: episodeId });
+      const info = await call<MediaInfo>("media-info", { episode_id: episodeId }, request);
       await sendLocalAudio(request, reply, info);
     },
   );
@@ -318,7 +337,12 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     "/app.js": ["app.js", "text/javascript; charset=utf-8"],
     "/player.js": ["player.js", "text/javascript; charset=utf-8"],
     "/styles.css": ["styles.css", "text/css; charset=utf-8"],
+    "/login.html": ["login.html", "text/html; charset=utf-8"],
   };
+  app.get("/login", async (_request, reply) => {
+    reply.type("text/html; charset=utf-8").header("Cache-Control", "no-cache");
+    return reply.send(readFileSync(resolve(PUBLIC_DIR, "login.html")));
+  });
   for (const [url, [file, contentType]] of Object.entries(staticFiles)) {
     app.get(url, async (_request, reply) => {
       reply.type(contentType).header("Cache-Control", "no-cache");

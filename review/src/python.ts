@@ -22,6 +22,9 @@ export interface PythonRunOptions {
   now?: string;
   timeoutMs?: number;
   module?: "review.cli" | "delivery.cli";
+  domainUrl?: string;
+  domainToken?: string;
+  fetchImpl?: typeof fetch;
   spawnImpl?: typeof spawn;
 }
 
@@ -31,11 +34,57 @@ export type PythonRunner = <T = unknown>(
   options?: PythonRunOptions,
 ) => Promise<T>;
 
+async function runDomain<T>(
+  command: string,
+  payload: Record<string, unknown>,
+  options: PythonRunOptions,
+): Promise<T> {
+  const module = options.module ?? "review.cli";
+  const area = module === "delivery.cli" ? "delivery" : "review";
+  const base = (options.domainUrl ?? process.env.PODCAST_DOMAIN_URL)?.replace(/\/$/, "");
+  if (!base) throw new PythonCommandError("internal_error", "未配置领域服务地址");
+  const token = options.domainToken ?? process.env.PODCAST_DOMAIN_TOKEN ?? "";
+  const fetchImpl = options.fetchImpl ?? fetch;
+  let response: Response;
+  try {
+    response = await fetchImpl(`${base}/rpc/${area}/${command}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "X-Domain-Token": token,
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(options.timeoutMs ?? 60_000),
+    });
+  } catch {
+    throw new PythonCommandError("internal_error", "领域服务不可用或超时");
+  }
+  let envelope: any;
+  try {
+    envelope = await response.json();
+  } catch {
+    throw new PythonCommandError("internal_error", "领域服务未返回有效 JSON");
+  }
+  if (envelope.status === "success") return envelope.data as T;
+  if (envelope.status === "failed" && envelope.error) {
+    throw new PythonCommandError(
+      envelope.error.code ?? "internal_error",
+      envelope.error.message ?? "领域操作失败",
+      envelope.error.details ?? {},
+    );
+  }
+  throw new PythonCommandError("internal_error", `领域服务 HTTP ${response.status}`);
+}
+
 export async function runPython<T = unknown>(
   command: string,
   payload: Record<string, unknown>,
   options: PythonRunOptions = {},
 ): Promise<T> {
+  if (options.domainUrl ?? process.env.PODCAST_DOMAIN_URL) {
+    return runDomain<T>(command, payload, options);
+  }
   const args = ["run", "python", "-m", options.module ?? "review.cli", command];
   if (options.dbPath) args.push("--db", options.dbPath);
   if (options.now) args.push("--now", options.now);

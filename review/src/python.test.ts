@@ -78,6 +78,35 @@ test("损坏 JSON 与非零无领域结果均为 internal_error", async () => {
   );
 });
 
+test("领域 HTTP 成功与失败映射，不启动 Python 子进程", async () => {
+  let capturedUrl = "";
+  let capturedHeaders: Record<string, string> = {};
+  const fetchImpl = async (input: any, init: any) => {
+    capturedUrl = String(input);
+    capturedHeaders = init.headers;
+    return new Response(JSON.stringify({ status: "success", data: { value: 7 } }), { status: 200 });
+  };
+  const result = await runPython<{ value: number }>("inbox", {}, {
+    domainUrl: "http://127.0.0.1:8788/", domainToken: "secret", fetchImpl,
+  });
+  assert.equal(result.value, 7);
+  assert.equal(capturedUrl, "http://127.0.0.1:8788/rpc/review/inbox");
+  assert.equal(capturedHeaders["X-Domain-Token"], "secret");
+
+  const failed = async () => new Response(JSON.stringify({
+    status: "failed", error: { code: "stale_revision", message: "旧版", details: {} },
+  }), { status: 200 });
+  await assert.rejects(
+    runPython("approve", {}, { domainUrl: "http://domain", fetchImpl: failed }),
+    (error: unknown) => error instanceof PythonCommandError && error.code === "stale_revision",
+  );
+  const network = async () => { throw new Error("offline"); };
+  await assert.rejects(
+    runPython("inbox", {}, { domainUrl: "http://domain", fetchImpl: network }),
+    (error: unknown) => error instanceof PythonCommandError && error.code === "internal_error",
+  );
+});
+
 test("Python 命令超时 kill 并拒绝", async () => {
   const spawnImpl = (() => {
     const child = new EventEmitter() as any;

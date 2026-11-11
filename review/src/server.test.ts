@@ -214,6 +214,62 @@ test("节目库 API 走 delivery.cli 并返回签名资源", async () => {
   }
 });
 
+test("多用户登录、会话与退出流程", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = (async (input: any, init: any) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.endsWith("/auth/session")) {
+      return new Response(JSON.stringify({
+        status: "success", data: { id: 42, email: "viewer@example.com", role: "viewer" },
+      }), { status: 200 });
+    }
+    if (url.endsWith("/auth/login")) {
+      return new Response(JSON.stringify({
+        status: "success",
+        data: { token: "token-123", user: { id: 42, email: "viewer@example.com", role: "viewer" } },
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ status: "success", data: { revoked: true } }), { status: 200 });
+  }) as typeof fetch;
+  const app = buildApp({
+    auth: AUTH,
+    domainUrl: "http://domain",
+    domainToken: "internal",
+    multiUser: true,
+    pythonRunner: runnerWith(() => ({ items: [], count: 0 })),
+  });
+  try {
+    const loginPage = await app.inject({ method: "GET", url: "/login.html" });
+    assert.equal(loginPage.statusCode, 200);
+    const denied = await app.inject({ method: "GET", url: "/api/review/episodes" });
+    assert.equal(denied.statusCode, 401);
+    const loggedIn = await app.inject({
+      method: "POST", url: "/login",
+      payload: { email: "viewer@example.com", password: "viewer-password" },
+    });
+    assert.equal(loggedIn.statusCode, 200);
+    assert.ok(loggedIn.headers["set-cookie"]?.toString().includes("HttpOnly"));
+    const inbox = await app.inject({
+      method: "GET", url: "/api/review/episodes",
+      headers: { cookie: "podcast_session=token-123" },
+    });
+    assert.equal(inbox.statusCode, 200);
+    const logout = await app.inject({
+      method: "POST", url: "/logout",
+      headers: { cookie: "podcast_session=token-123" },
+    });
+    assert.equal(logout.statusCode, 200);
+    assert.ok(logout.headers["set-cookie"]?.toString().includes("Max-Age=0"));
+    assert.ok(calls.some((url) => url.endsWith("/auth/login")));
+    assert.ok(calls.some((url) => url.endsWith("/auth/session")));
+  } finally {
+    await app.close();
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("本地音频支持 HEAD、Range、后缀 Range 与非法 Range", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "review-media-"));
   const audio = join(workspace, "audio.mp3");

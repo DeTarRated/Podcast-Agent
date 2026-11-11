@@ -7,6 +7,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Optional
 
+from state.compat import id_in
+
 
 def _usage_cost(usage_basis: Optional[str]) -> Optional[float]:
     if not usage_basis:
@@ -39,6 +41,7 @@ def usage_report(
     status: Optional[str] = None,
     provider: Optional[str] = None,
     limit: int = 500,
+    episode_ids: Optional[list[int]] = None,
 ) -> dict:
     """返回筛选后的全部汇总及前 limit 条明细，汇总不受 limit 截断。"""
     if not isinstance(limit, int) or not 1 <= limit <= 500:
@@ -57,6 +60,13 @@ def usage_report(
     if provider:
         conditions.append("l.provider = ?")
         params.append(provider)
+    if episode_ids is not None:
+        if not episode_ids:
+            conditions.append("1 = 0")
+        else:
+            condition, condition_params = id_in(conn, "l.episode_id", episode_ids)
+            conditions.append(condition)
+            params.extend(condition_params)
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     rows = conn.execute(
         f"""
@@ -107,12 +117,19 @@ def usage_report(
         else:
             bucket["amount"] = round(bucket["amount"] + cost, 6)
 
+    if episode_ids is not None:
+        condition, episode_params = id_in(conn, "e.id", episode_ids)
+        episode_filter = f"WHERE {condition}"
+    else:
+        episode_filter, episode_params = "", ()
     episodes = conn.execute(
-        """
+        f"""
         SELECT DISTINCT e.id, e.title, e.guid
         FROM ledger l JOIN episode e ON e.id = l.episode_id
+        {episode_filter}
         ORDER BY e.title, e.id
-        """
+        """,
+        episode_params,
     ).fetchall()
     purposes = [row[0] for row in conn.execute("SELECT DISTINCT purpose FROM ledger ORDER BY purpose")]
     providers = [row[0] for row in conn.execute("SELECT DISTINCT provider FROM ledger WHERE provider IS NOT NULL ORDER BY provider")]
