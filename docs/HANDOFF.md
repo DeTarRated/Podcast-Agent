@@ -3,7 +3,7 @@
 - 日期：2026-11
 - 定位：当前状态、验证证据、运行入口和剩余工作的唯一交接索引
 - 历史整理：已完成的最小 MVP 清单、MVP 交接和 override 专题交接已合并到本文件；验证证据继续保留在 `docs/verification/`
-- 当前阶段：本地真实自动全链已通过；高并发核心链路与本地压测已通过；VPS／生产部署尚未执行
+- 当前阶段：本地真实自动全链与高并发核心链路已通过；VPS 基础部署、数据迁移、SSH 隧道访问与本机自动备份已完成；恢复演练、生产压测和业务 cron 待做
 
 ## 当前已验证的系统闭环
 
@@ -45,7 +45,7 @@ RSS 发现与可选 Chelsea 分类
 
 ### 高并发专项范围
 
-高并发只覆盖以下三条链路，范围与指标见 `docs/HIGH_CONCURRENCY_REQUIREMENTS.md`：
+高并发只覆盖以下三条链路，实际技术实现、范围与指标见 `docs/HIGH_CONCURRENCY_REQUIREMENTS.md`：
 
 - 多期任务并发处理：PostgreSQL `job`、`job_attempt`、`SKIP LOCKED`、幂等、租约和恢复
 - 供应商限流与预算：Redis 令牌桶、owner/TTL 租约、失败关闭、预算与最大 running
@@ -70,6 +70,7 @@ RSS 发现与可选 Chelsea 分类
 - Python：**166 passed，20 skipped**（PostgreSQL／Redis 测试默认需要显式启用本地服务）
 - Runner：**28 passed**
 - Review：**14 passed**
+- 上述 Python、Runner、Review 结果已在 VPS 使用相同提交复跑通过
 - translate-srt 的两个 self-test 已通过
 - `git diff --check` 已通过
 
@@ -88,6 +89,53 @@ cd review && npm start
 
 Fastify 默认 `127.0.0.1:8787`。多用户模式需要 `PODCAST_MULTIUSER=1`、一致的 `PODCAST_DOMAIN_URL` 和 `PODCAST_DOMAIN_TOKEN`。生产 HTTPS 必须启用 `PODCAST_AUTH_SECURE_COOKIE=1`，不得沿用演示弱密码。
 
+### VPS 当前部署
+
+- 规格：腾讯云轻量新加坡，2 核、4 GB 内存、60 GB SSD，Ubuntu 24.04 LTS
+- 代码：`/home/ubuntu/podcast-agent`，通过 GitHub `main` 拉取
+- 运行时：uv 管理 Python 3.12.16、Node 22 LTS、Docker Compose、PostgreSQL 16、Redis 7
+- 生产配置：`/home/ubuntu/podcast-agent/.env`，权限 600，不进入仓库
+- 服务端配置：`/home/ubuntu/podcast-agent-runtime/`，包含 Compose、备份脚本与运行锁，目前为服务器本地文件
+- `podcast-domain.service`：FastAPI，仅监听 `127.0.0.1:8788`
+- `podcast-review.service`：Fastify，仅监听 `127.0.0.1:8787`
+- PostgreSQL／Redis 容器仅绑定本机；公网只开放 SSH
+- 当前通过 SSH 隧道 `18787:127.0.0.1:8787` 内测，避免与 Mac 本地旧服务占用 8787 冲突
+- 临时管理员账号已创建，密码不写入文档；开放公网前必须换成强密码并配置 HTTPS
+
+浏览器验收入口：
+
+```bash
+ssh -i <私钥路径> -L 18787:127.0.0.1:8787 ubuntu@<VPS公网IPv4>
+# 浏览器打开 http://127.0.0.1:18787/login
+```
+
+### VPS 数据迁移结果
+
+- 已迁移 2 期 Episode、32 个 artifact、11 条账本、3 条审批和 2 条当前交付
+- 92 MB 节目产物均有 SHA-256 清单；音频由服务器从 R2 只读下载并校验，未做 R2 写入
+- SQLite `integrity_check=ok`，SQLite → PostgreSQL 对账 `mismatches=[]`
+- 17 条 macOS 绝对 artifact 路径已备份后改写为服务器路径，内容 hash 不变
+- 服务重启后，管理员登录、节目库和详情均返回 200；两期字幕分别为 898 和 1904 条
+- 已创建临时管理员并验证浏览器登录；不迁移本地演示账号或测试队列
+
+### 本机自动备份
+
+- `podcast-backup.timer`：每天北京时间约 03:30 执行，带随机延迟
+- `podcast-backup.service`：SQLite backup API、PostgreSQL `pg_dump`、节目产物压缩与 SHA-256 清单
+- 保存位置：`/home/ubuntu/backups/podcast-agent/`
+- 保留最近 7 天及更早的 4 个每周备份；使用 `flock` 防止重叠
+- 首次备份约 84 MB、85 个产物文件；SQLite 完整性、PostgreSQL dump 可读性、压缩包和 SHA-256 均通过
+- 当前仅 VPS 本机备份，未上传 R2；完整恢复演练尚未执行
+
+常用检查：
+
+```bash
+sudo systemctl status podcast-domain.service podcast-review.service
+sudo systemctl list-timers podcast-backup.timer
+sudo systemctl start podcast-backup.service
+sudo journalctl -u podcast-backup.service
+```
+
 ### 定时任务命令
 
 ```bash
@@ -97,7 +145,7 @@ uv run python -m review.cli auto-approve-due
 node --experimental-strip-types runner/src/drive-delivery.ts
 ```
 
-这些命令已具备，但实际系统 cron 尚未安装。无任务时应退出，不启动常驻空转 worker。
+这些业务命令已具备，但业务 cron 尚未安装；当前唯一新增定时器是本机备份。开启 RSS／任务处理前必须再次确认真实付费调用边界。无任务时应退出，不启动常驻空转 worker。
 
 ### 常用自检
 
@@ -120,7 +168,7 @@ uv run python skills/translate-srt/scripts/kb_tools.py --self-test
 - 当前全景：`docs/ROADMAP.md`
 - 表结构与代码入口：`docs/DATA_MODEL.md`
 - 接口清单：`docs/API_REFERENCE.md`
-- 高并发范围：`docs/HIGH_CONCURRENCY_REQUIREMENTS.md`
+- 高并发技术实现与验收边界：`docs/HIGH_CONCURRENCY_REQUIREMENTS.md`
 - 压测结果：`docs/PERFORMANCE_REPORT.md`
 - Redis 实现：`docs/REDIS_COORDINATION.md`
 
@@ -137,8 +185,9 @@ uv run python skills/translate-srt/scripts/kb_tools.py --self-test
 
 ### 设计与学习
 
-- `.agent/high-concurrency-architecture.md`：高并发完整设计，按用户决定暂不提交
+- `.agent/high-concurrency-architecture.md`：高并发原始设计、决策与实施差异，已纳入版本管理
 - `docs/learning/connection-management.md`：独立后端连接管理学习模块
+- `docs/learning/high-concurrency-foundations.md`：面向初学者的任务调度型高并发、选型优缺点与安全实验
 
 ## 真实运行恢复记录
 
@@ -151,7 +200,9 @@ uv run python skills/translate-srt/scripts/kb_tools.py --self-test
 
 ## 剩余工作与当前边界
 
-- VPS、HTTPS、生产强密码、监控告警、备份策略与真实 cron 部署
+- 在临时目录和临时 PostgreSQL 数据库执行完整恢复演练
+- 配置监控告警、磁盘与备份失败检查；按需配置 HTTPS 和生产强密码
+- 经明确授权后安装 RSS、任务处理、超时审批和交付 cron
 - 生产环境下重新测量 API、队列、Redis、带宽和故障接管
 - 按真实供应商账号配额校准限流，不用本地数字代替供应商能力
 - 真实付费局部重跑需要受控验收，当前以 faux 测试为主
@@ -164,4 +215,4 @@ uv run python skills/translate-srt/scripts/kb_tools.py --self-test
 - 代理不自行执行 git commit；用户自行提交或明确批准后由代理执行。
 - 提交前实际读取 `git status` 与 `git log --oneline`，按模块内聚提交。
 - 不提交 `.env`、`var/`、真实媒体、凭据或 `.agent/tmp/` 临时文件。
-- `.agent/high-concurrency-architecture.md` 当前按用户决定暂不提交；`.vscode/` 为个人编辑器配置，不需要提交。
+- `.agent/high-concurrency-architecture.md` 已纳入版本管理；`.vscode/` 为个人编辑器配置，通过 `.gitignore` 排除。

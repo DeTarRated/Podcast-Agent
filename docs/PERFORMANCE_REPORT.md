@@ -91,12 +91,19 @@ uv run python .agent/tmp/load-redis.py
 
 使用随机 key 前缀，测试结束后可删除该前缀对应的测试 key；不 flush 整个 Redis。
 
+## VPS 当前状态
+
+- 相同提交已在 2 核、4 GB VPS 完成 Python、Runner、Review 回归，结果分别为 166 passed／20 skipped、28 passed、14 passed
+- PostgreSQL／Redis 已部署并健康运行，Fastify／FastAPI 入口与 systemd 服务已联调
+- 两期业务数据已迁移，本机自动备份已验证
+- 尚未在 VPS 执行本报告中的负载脚本，因此没有 VPS QPS、吞吐、p95／p99 或资源占用数字
+
 ## 仍需验收
 
 - 真实 VPS 的 CPU、内存、带宽、磁盘 IO 和外部网络
 - 真实 Scribe／模型的限流阈值与失败率
 - 多用户权限下的混合读写压测和预算超限行为
 - worker 崩溃、租约接管、Redis／PostgreSQL 短暂不可用后的恢复
-- 生产域名、HTTPS、强密码、备份和监控告警
+- 完整恢复演练、HTTPS、生产强密码和监控告警；本机备份已配置但不等于恢复验收
 
 在取得这些证据前，不把本报告中的本地数字写成生产高并发承诺。

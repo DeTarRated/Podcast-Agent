@@ -2,7 +2,7 @@
 
 > 定位：记录本项目的技术选型与工程设计细节。模块归属以 `ARCHITECTURE.md` 为准，需求以 `REQUIREMENTS.md` 为准，阶段安排与验证时机以 `IMPLEMENTATION_PLAN.md` 为准。本文不重议已定事项；带「草案」标记的内容待对应实施阶段定稿，带「待验证」标记的内容由最小 MVP 验证后回填。
 >
-> 接口清单与代码入口见 `docs/API_REFERENCE.md`；逐表字段见 `docs/DATA_MODEL.md`；高并发专项范围与验收指标见 `docs/HIGH_CONCURRENCY_REQUIREMENTS.md`。
+> 接口清单与代码入口见 `docs/API_REFERENCE.md`；逐表字段见 `docs/DATA_MODEL.md`；高并发技术实现、专项范围与验收指标见 `docs/HIGH_CONCURRENCY_REQUIREMENTS.md`。
 
 ## 状态标记约定
 
@@ -31,7 +31,7 @@
 
 - Python：发现、流水线工具、Runner 周边脚本。版本与依赖管理在最小 MVP 定稿；依赖清单与锁文件进仓库，凭据不入库。
 - Node：Fastify v5 审批 HTTP 适配、静态页与本地音频流；Python 经窄 CLI 统一执行审核与交付领域事务，Node 不直接连接 SQLite。
-- 运行时约束：VPS 单机；无任务时除 cron 外无常驻进程，执行层按需唤醒、空闲退出；超时审批与交付也由定时扫描触发。
+- 运行时约束：VPS 单机；FastAPI 领域服务与 Fastify 审核入口由 systemd 长驻，执行层按需唤醒、空闲退出；超时审批与交付由定时扫描触发，业务 cron 尚未开启。
 - 凭据与环境变量：Scribe API key、模型凭据、R2 密钥（最小权限）、分类 LLM 凭据，统一走环境变量或受限配置文件，日志与仓库不出现密钥。
 
 ## 库与框架候选（待选）
@@ -90,18 +90,37 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 
 ### 部署拓扑
 
-- VPS 单机；cron 每 15 分钟触发 discover，条件请求 304 时零后续动作。
+- VPS 单机；PostgreSQL 16 与 Redis 7 使用 Docker Compose 持久化，端口只绑定 `127.0.0.1`。
+- FastAPI 领域服务与 Fastify 审核入口由 systemd 长驻，分别监听 `127.0.0.1:8788` 与 `127.0.0.1:8787`。
+- 当前公网只开放 SSH，通过 SSH 隧道访问审核入口；HTTPS 尚未配置。
 - 执行进程按需启动：存在待处理期才运行，队列清空即退出；审核等待不占用模型会话运行。
-- 审核页与审批服务按需启动，审核期直接读本地产物；人工或 12 小时超时审批后才上传 R2。
-- 自动审批与交付由 cron 扫描到期或待交付记录，不启动常驻 worker；自动审批使用短事务校验版本，R2 上传不包在数据库事务中。
-- 私人播客库使用稳定私有节目地址；R2 私有桶 + 动态预签名 URL，过期重新签发，备份目的地独立于工作数据。
+- 人工或 12 小时超时审批后才上传 R2；自动审批与交付 cron 尚未开启。
+- 私人播客库使用稳定私有节目地址；R2 私有桶 + 动态预签名 URL，过期重新签发。
 - 发布后修订期间发布指针继续指向旧版，新版上传与校验完整后才切换。
 - 知识库为独立 git 仓库，不随本仓库公开提交。
-- 审核入口、续签入口等按需启动方式待目标 VPS 环境实测（打磨阶段部署验收）。
+- 当前备份只保存到 VPS 独立目录，不包含 `.env` 或 SSH 私钥；异地副本与完整恢复演练待做。
+
+当前 VPS 实施：
+
+| 项目 | 当前值 |
+| --- | --- |
+| 系统与规格 | Ubuntu 24.04 LTS；2 核、4 GB、60 GB SSD；新加坡 |
+| 代码目录 | `/home/ubuntu/podcast-agent` |
+| 生产环境文件 | `/home/ubuntu/podcast-agent/.env`，权限 600，不入库 |
+| 服务端运行配置 | `/home/ubuntu/podcast-agent-runtime/`，目前不随 GitHub 分发 |
+| Python | uv 管理 3.12.16，避免 Ubuntu 自带 3.12.3 的 SRT 参数解析兼容问题 |
+| Node | 22 LTS，使用内置 TypeScript strip-types |
+| 领域服务 | `podcast-domain.service` |
+| 审核服务 | `podcast-review.service` |
+| 本机备份 | `podcast-backup.timer` / `podcast-backup.service` |
+| 备份目录 | `/home/ubuntu/backups/podcast-agent/` |
+| 备份策略 | 每天北京时间约 03:30；最近 7 天 + 更早 4 个每周备份 |
+
+服务器部署回归：Python 166 passed／20 skipped、Runner 28 passed、Review 14 passed；两期节目、账本、审批和当前交付已迁移并对账。生产性能数字尚未测量，不能沿用本地压测结果。
 
 ### cron 唤醒顺序（待部署验收）
 
-下列命令分别执行并退出，不启动常驻 worker；实际写入 crontab 前仍需完成本地真实全链验收：
+下列命令分别执行并退出，不启动常驻 worker；本地真实全链与 VPS 服务回归已通过，但业务 cron 尚未开启，实际安装前仍需明确真实付费调用边界：
 
 ```bash
 # 每 15 分钟发现新节目

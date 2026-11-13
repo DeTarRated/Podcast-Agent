@@ -1,6 +1,6 @@
 # Redis 分布式限流与并发协调实现记录
 
-- 状态：已实现并通过本地真实 Redis 测试
+- 状态：已实现并通过本地真实 Redis 测试；VPS 单实例健康检查通过，生产并发压测待做
 - 目标：在多 worker／多期节目并发处理时，对外部付费供应商进行速率与并发控制
 - 核心代码：`pipeline/provider_gate.py`
 - Runner 接缝：`runner/src/provider-gate.ts`
@@ -149,6 +149,13 @@ PODCAST_TEST_REDIS=1 uv run pytest tests/test_provider_gate.py -q
 
 Runner 的 `provider-gate.test.ts` 另验证 provider／owner 参数映射和限流错误。真实测试使用本地 Docker Redis，不产生 Scribe 或模型费用。
 
+## 与其他高并发组件的边界
+
+- PostgreSQL 任务租约负责 job 的领取、心跳与接管；Redis 租约只负责供应商调用的并发占用
+- PostgreSQL 预算负责金额、用户／Episode 配额和任务背压；Redis 不负责账本或费用事实
+- Fastify／FastAPI 的多用户会话与 Episode 授权仍以 PostgreSQL 为权威，不把权限缓存到 Redis
+- 完整技术实现见 `docs/HIGH_CONCURRENCY_REQUIREMENTS.md`
+
 ## 面试可讲的问题
 
 ### 为什么限流和并发控制都要做？
@@ -185,5 +192,6 @@ Runner 的 `provider-gate.test.ts` 另验证 provider／owner 参数映射和限
 - 尚未实现动态限流配置管理页；当前通过环境变量配置
 - 长任务租约依赖 TTL，尚未做独立心跳压测；PostgreSQL 任务租约仍有自己的恢复语义
 - 未把本地测试吞吐写成生产 QPS
-- 多用户配额与权限在后续阶段实施
+- 多用户账号、会话、Episode 授权和 PostgreSQL 预算已实现；登录也复用 Redis 闸门限流
+- VPS 当前使用受密码保护且仅监听本机的单 Redis 实例，尚未做 Redis 故障注入或生产吞吐测量
 - 真实供应商的限流阈值仍需按账号配额与受控调用校准

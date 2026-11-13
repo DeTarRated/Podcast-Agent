@@ -16,8 +16,9 @@ __pycache__/
 # Node
 node_modules/
 
-# 系统文件
+# 系统与编辑器个人配置
 .DS_Store
+.vscode/
 
 # 临时过程稿（子代理施工图纸等，非正式文档）
 .agent/tmp/
