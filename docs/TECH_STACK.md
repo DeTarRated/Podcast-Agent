@@ -98,7 +98,7 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 - 私人播客库使用稳定私有节目地址；R2 私有桶 + 动态预签名 URL，过期重新签发。
 - 发布后修订期间发布指针继续指向旧版，新版上传与校验完整后才切换。
 - 知识库为独立 git 仓库，不随本仓库公开提交。
-- 当前备份只保存到 VPS 独立目录，不包含 `.env` 或 SSH 私钥；异地副本与完整恢复演练待做。
+- 当前备份只保存到 VPS 独立目录，不包含 `.env` 或 SSH 私钥；已完成同机恢复演练，异地副本与整机丢失恢复仍待做。
 
 当前 VPS 实施：
 
@@ -114,7 +114,7 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 | 审核服务 | `podcast-review.service` |
 | 本机备份 | `podcast-backup.timer` / `podcast-backup.service` |
 | 备份目录 | `/home/ubuntu/backups/podcast-agent/` |
-| 备份策略 | 每天北京时间约 03:30；最近 7 天 + 更早 4 个每周备份 |
+| 备份策略 | 每天北京时间约 03:30；最近 7 天 + 更早 4 个每周备份；恢复演练证据保存在 `/home/ubuntu/podcast-agent-runtime/restore-reports/` |
 
 服务器部署回归：Python 166 passed／20 skipped、Runner 28 passed、Review 14 passed；两期节目、账本、审批和当前交付已迁移并对账。生产性能数字尚未测量，不能沿用本地压测结果。
 

@@ -3,7 +3,7 @@
 - 日期：2026-11
 - 定位：当前状态、验证证据、运行入口和剩余工作的唯一交接索引
 - 历史整理：已完成的最小 MVP 清单、MVP 交接和 override 专题交接已合并到本文件；验证证据继续保留在 `docs/verification/`
-- 当前阶段：本地真实自动全链与高并发核心链路已通过；VPS 基础部署、数据迁移、SSH 隧道访问与本机自动备份已完成；恢复演练、生产压测和业务 cron 待做
+- 当前阶段：本地真实自动全链与高并发核心链路已通过；VPS 基础部署、数据迁移、SSH 隧道访问、本机自动备份与同机恢复演练已完成；生产压测和业务 cron 待做
 
 ## 当前已验证的系统闭环
 
@@ -125,7 +125,9 @@ ssh -i <私钥路径> -L 18787:127.0.0.1:8787 ubuntu@<VPS公网IPv4>
 - 保存位置：`/home/ubuntu/backups/podcast-agent/`
 - 保留最近 7 天及更早的 4 个每周备份；使用 `flock` 防止重叠
 - 首次备份约 84 MB、85 个产物文件；SQLite 完整性、PostgreSQL dump 可读性、压缩包和 SHA-256 均通过
-- 当前仅 VPS 本机备份，未上传 R2；完整恢复演练尚未执行
+- 2026-11-13 已按 `.agent/tmp/vps-backup-restore-spec.md` 完成临时恢复演练：备份复制、tar 解压、SQLite 完整性、PostgreSQL 临时库恢复、schema v5、独立业务对账、产物数量和关键交付 hash 均通过；演练期间 FastAPI／Fastify／PostgreSQL／Redis 保持健康，未写 R2、未触发付费调用，临时数据库与临时目录已清理，证据目录保留
+- 恢复演练发现的三张表差异均为 SQLite／PostgreSQL 类型映射差异（0/1 与 boolean、`amount_est` 数值与字符串），归一化后一致，无未解析业务差异
+- 当前仅 VPS 本机备份，未上传 R2；已验证同机恢复能力，但尚不等于异地容灾、全时点事务快照或整机丢失恢复
 
 常用检查：
 
@@ -200,7 +202,6 @@ uv run python skills/translate-srt/scripts/kb_tools.py --self-test
 
 ## 剩余工作与当前边界
 
-- 在临时目录和临时 PostgreSQL 数据库执行完整恢复演练
 - 配置监控告警、磁盘与备份失败检查；按需配置 HTTPS 和生产强密码
 - 经明确授权后安装 RSS、任务处理、超时审批和交付 cron
 - 生产环境下重新测量 API、队列、Redis、带宽和故障接管

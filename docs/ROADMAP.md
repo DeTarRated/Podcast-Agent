@@ -42,7 +42,7 @@
 | override 机制 | 人工修改持久化、重跑人工优先、冲突阻断 | ✅ 保存、合并、驳回与发布后修订通过；真实付费局部重跑待受控验收 | `docs/HANDOFF.md`、`pipeline/override.py`、`review/service.py` |
 | 评测 | 后续从 override 历史生成样本，追踪质量与工作量 | ⬜ 明确后置，不阻塞当前版本 | `docs/REQUIREMENTS.md`·评测 |
 | 框架隔离 | ToolSpec 中立契约与 Runner 薄封装，隔离实验 API | ✅ | `runner/src/tool-spec.ts`、`runner/src/durable-adapter.ts`、`docs/verification/flow-test.md` |
-| 部署运维 | VPS、cron、凭据、私有访问、备份、磁盘与操作手册 | 🟡 VPS 基础部署、systemd 长驻服务、数据迁移、SSH 隧道与本机备份已完成；恢复演练、监控、HTTPS 和业务 cron 待做 | `docs/TECH_STACK.md`、`docs/HANDOFF.md` |
+| 部署运维 | VPS、cron、凭据、私有访问、备份、磁盘与操作手册 | 🟡 VPS 基础部署、systemd 长驻服务、数据迁移、SSH 隧道、本机备份与同机恢复演练已完成；监控、HTTPS、异地副本和业务 cron 待做 | `docs/TECH_STACK.md`、`docs/HANDOFF.md` |
 | 分类过滤 | 只按标题／简介判断 Chelsea 相关性，独立账本，入队前过滤 | ✅ mock 与真实分类入队通过；价格／命中率继续观察 | `discover/classify.py`、`tests/test_classify.py` |
 | 多用户与高并发 | PostgreSQL 队列、多 worker、Redis 闸门、授权、预算与本地压测 | ✅ 核心链路已实现并有本地证据；VPS 回归通过，生产压测与真实供应商校准待做 | `docs/HIGH_CONCURRENCY_REQUIREMENTS.md`、`docs/PERFORMANCE_REPORT.md`、`state/postgres/` |
 
@@ -58,7 +58,7 @@
 
 | 阻塞项 | 状态 | 影响 | 处理入口 |
 | --- | --- | --- | --- |
-| 生产运维收尾 | 🟡 基础部署已完成 | 恢复演练、监控、HTTPS、强认证、生产压测与业务 cron | `docs/TECH_STACK.md`、`docs/HANDOFF.md` |
-| 备份恢复 | 🟡 本机自动备份已验证 | 尚未进行完整恢复演练；当前无异地副本 | `docs/HANDOFF.md` |
+| 生产运维收尾 | 🟡 基础部署与同机恢复已完成 | 监控、HTTPS、强认证、异地副本、生产压测与业务 cron | `docs/TECH_STACK.md`、`docs/HANDOFF.md` |
+| 备份恢复 | ✅ 本机自动备份与同机恢复演练已通过 | 当前无异地副本，不覆盖整机丢失恢复或全时点事务快照 | `docs/HANDOFF.md`、`docs/TECH_STACK.md` |
 | 需求修订（Scribe 无服务端幂等键） | 待确认是否回填既有需求 | 防止把本地 call_ref 误认为供应商幂等 | `docs/verification/scribe-idempotency-controlled-test.md` |
 | 真实供应商长期限流校准 | ⬜ 待生产小流量验收 | 本地速率不代表账号真实配额 | `docs/REDIS_COORDINATION.md`、`docs/PERFORMANCE_REPORT.md` |
