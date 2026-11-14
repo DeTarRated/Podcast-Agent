@@ -3,6 +3,7 @@
 // 模拟场景：
 // - Episode 幂等入队、多个 worker 领取、完成回写与租约续约
 // - 子进程 unknown 失败进入 fail 且不自动重试
+// - 队列命令始终经 uv 启动，不把 run 误当可执行文件
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -30,7 +31,9 @@ function queueRunner() {
   let claimIndex = 0;
   const completed: number[] = [];
   const failed: string[][] = [];
+  const commands: string[] = [];
   const runner = async (_command: string, args: string[]): Promise<RunResult> => {
+    commands.push(_command);
     let result: any;
     if (args.includes("pipeline.episode_flow")) {
       result = { items: [{ id: 1, guid: "g1" }, { id: 2, guid: "g2" }] };
@@ -55,11 +58,11 @@ function queueRunner() {
     }
     return { exitCode: 0, stdout: JSON.stringify({ status: "success", data: result }), stderr: "" };
   };
-  return { runner, completed, failed };
+  return { runner, completed, failed, commands };
 }
 
 test("Episode 入队后多 worker 领取并完成", async () => {
-  const { runner, completed } = queueRunner();
+  const { runner, completed, commands } = queueRunner();
   const result = await runPending({
     commandRunner: runner,
     spawnImpl: childWith(0),
@@ -70,6 +73,8 @@ test("Episode 入队后多 worker 领取并完成", async () => {
   assert.equal(result.claimed, 2);
   assert.equal(result.completed, 2);
   assert.deepEqual(completed.sort(), [1, 2]);
+  assert.ok(commands.length > 0);
+  assert.ok(commands.every((command) => command === "uv"));
 });
 
 test("unknown 子进程失败进入 fail 且不 complete", async () => {

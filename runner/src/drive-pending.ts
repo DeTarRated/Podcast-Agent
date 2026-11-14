@@ -8,7 +8,7 @@ import { runCommand, type RunResult } from "./bash.ts";
 
 const REPO_ROOT = resolve(import.meta.dirname, "../..");
 const DRIVE_EPISODE = resolve(import.meta.dirname, "drive-episode.ts");
-const JOB_CLI = ["run", "python", "-m", "state.postgres.job_cli"];
+const JOB_CLI = ["uv", "run", "python", "-m", "state.postgres.job_cli"];
 
 export interface PendingOptions {
   commandRunner?: typeof runCommand;
