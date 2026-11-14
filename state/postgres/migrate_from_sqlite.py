@@ -114,6 +114,43 @@ def verify(source, target) -> list[str]:
     return mismatches
 
 
+def sync_episode(conn, source_path: Path, episode_id: int) -> dict:
+    """入队前幂等同步单期，满足 job 外键；不覆盖已有不同身份的记录。"""
+    if not source_path.exists():
+        raise RuntimeError(f"SQLite 源库不存在: {source_path}")
+    source = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True)
+    source.row_factory = sqlite3.Row
+    try:
+        row = source.execute("SELECT * FROM episode WHERE id = ?", (episode_id,)).fetchone()
+        if row is None:
+            raise RuntimeError(f"SQLite Episode 不存在: {episode_id}")
+        columns = row.keys()
+        values = [_convert(column, row[column]) for column in columns]
+        with conn.transaction():
+            was_existing = conn.execute(
+                "SELECT 1 FROM episode WHERE id = %s", (episode_id,)
+            ).fetchone()
+            conn.execute(
+                sql.SQL("INSERT INTO episode ({}) VALUES ({}) ON CONFLICT (id) DO NOTHING").format(
+                    sql.SQL(", ").join(map(sql.Identifier, columns)),
+                    sql.SQL(", ").join([sql.Placeholder()] * len(columns)),
+                ),
+                values,
+            )
+            existing = conn.execute(
+                "SELECT guid,feed FROM episode WHERE id = %s", (episode_id,)
+            ).fetchone()
+            if existing is None or (existing["guid"], existing["feed"]) != (row["guid"], row["feed"]):
+                raise RuntimeError(f"PostgreSQL Episode id 与 SQLite 身份不一致: {episode_id}")
+            conn.execute(
+                "SELECT setval(pg_get_serial_sequence('episode','id'), (SELECT MAX(id) FROM episode), true)"
+            )
+        conn.commit()
+        return {"episode_id": episode_id, "reused": was_existing is not None}
+    finally:
+        source.close()
+
+
 def migrate_from_sqlite(conn, source_path: Path) -> dict:
     if not source_path.exists():
         raise RuntimeError(f"SQLite 源库不存在: {source_path}")

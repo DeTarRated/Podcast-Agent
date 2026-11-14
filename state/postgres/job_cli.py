@@ -4,8 +4,11 @@ from __future__ import annotations
 import argparse
 import json
 from decimal import Decimal
+from pathlib import Path
 
+from state.db import default_db_path
 from state.postgres import db, job, migrations
+from state.postgres.migrate_from_sqlite import sync_episode
 
 
 def main(argv=None) -> int:
@@ -46,6 +49,7 @@ def main(argv=None) -> int:
     try:
         migrations.migrate(conn)
         if args.command == "enqueue-episode":
+            sync_episode(conn, Path(default_db_path()), args.episode_id)
             payload = {"episode_id": args.episode_id, "guid": args.guid}
             if args.estimated_cost is not None:
                 payload["estimated_cost"] = args.estimated_cost
