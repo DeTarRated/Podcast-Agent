@@ -108,6 +108,33 @@ test("派发翻译子任务：mockOutput 落盘 + pi-ai usage 回传 + 父子关
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("长任务 pending 时等待终态，不提前返回 unknown", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sub-test-"));
+  const { faux, models } = makeFaux();
+  const log: Array<{ callRef: string; taskId: string; reused: boolean }> = [];
+  behaviors.set("ref-slow", { mockOutput: "slow result\n", mockUsage: mockUsage(20, 10), delayMs: 8000, attempts: 0 });
+  faux.setResponses([
+    fauxAssistantMessage(
+      [fauxToolCall("experiment.dispatch", dispatchArgs(dir, "translate", "ref-slow"))],
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage([fauxText("done")]),
+  ]);
+  const runner = await Runner.open(BACKGROUND_CONTEXT, {
+    dbPath: join(dir, "session.sqlite"),
+    models,
+    model: MODEL,
+    tools: [dispatchTool(log)],
+  });
+  const out = await runner.submit(BACKGROUND_CONTEXT, "慢翻译");
+  await runner.close(BACKGROUND_CONTEXT);
+  assert.equal(out.status, "done");
+  assert.equal(log.length, 1);
+  assert.ok(existsSync(join(dir, "translate.srt")));
+  behaviors.delete("ref-slow");
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("同 callRef 重复派发：scanTasks 去重复用 taskId", async () => {
   const dir = mkdtempSync(join(tmpdir(), "sub-test-"));
   const { faux, models } = makeFaux();

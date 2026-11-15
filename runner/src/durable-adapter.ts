@@ -1,11 +1,13 @@
 // 执行层·pi-durable 适配层：ToolSpec → ToolRegistration 转换
 //
 // 换框架时只有本文件与 runner.ts 需要重写；业务工具与 ToolSpec 契约不变。
-import { defineExtension, defineTool, type Registry, type ToolRegistration } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, type Registry, type ToolRegistration, type ToolExecutionApi, type TaskId } from "@earendil-works/pi-durable";
+import type { Context } from "@earendil-works/chord";
 import { resolve } from "node:path";
 
 import { runCommand } from "./bash.ts";
 import type { JsonValue, ToolSpec } from "./tool-spec.ts";
+import { taskWaitTimeout, waitForTerminalTask } from "./task-wait.ts";
 import { defineSubagentTask, type SubagentInput, type SubagentResult } from "./experiment-subagent.ts";
 
 const subagentTask = defineSubagentTask();
@@ -64,6 +66,104 @@ async function reconcileLedger(callRef: string, usageBasis: string | undefined, 
   await ledgerCli("reconcile", args);
 }
 
+export interface DispatchLedger {
+  writeIntent: typeof writeIntent;
+  writeOutcome: typeof writeOutcome;
+  getStatus: typeof getLedgerStatus;
+  reconcile: typeof reconcileLedger;
+}
+const defaultLedger: DispatchLedger = {
+  writeIntent, writeOutcome, getStatus: getLedgerStatus, reconcile: reconcileLedger,
+};
+
+/** 同一实现供真实工具与 fake API/账本契约测试使用，不另建调度状态机。 */
+export async function dispatchSubagent(
+  input: SubagentInput,
+  api: Pick<ToolExecutionApi, "commit" | "conversationId" | "createTask" | "waitForTask">,
+  context: Context,
+  ledger: DispatchLedger = defaultLedger,
+) {
+  // 配置在任何 intent 或 createTask 之前校验，非法配置不能触发付费。
+  const waitTimeoutMs = taskWaitTimeout(process.env.PODCAST_SUBAGENT_WAIT_TIMEOUT_MS);
+  const kind = subagentTask.definition.name;
+  // 跨调用去重：扫描本 conversation 下同 kind 任务的 input.callRef，命中则复用既有任务
+  //（memo 存在工具任务上、不跨调用，不能用于跨调用去重）
+  let taskId: TaskId | undefined;
+  let cursor: Record<string, JsonValue> | undefined;
+  do {
+    const page = await api.commit(
+      (tx) => tx.scanTasks({ conversationId: api.conversationId, kind }, 100, cursor),
+      context,
+    );
+    for (const record of page.items) {
+      const rec = record as { id: TaskId; input?: { callRef?: string } };
+      if (rec.input?.callRef === input.callRef) {
+        taskId = rec.id;
+        break;
+      }
+    }
+    cursor = page.next;
+  } while (cursor !== undefined && taskId === undefined);
+  const reused = taskId !== undefined;
+  if (taskId === undefined) {
+    // 新付费任务：intent 先于 createTask；intent 失败则不创建任务
+    if (input.ledger) {
+      await ledger.writeIntent(input.ledger, input.callRef);
+    }
+    try {
+      taskId = await api.createTask(subagentTask, input, { ownership: { kind: "conversation" } }, context);
+    } catch (err) {
+      // createTask 失败：付费请求未发出，记 failed
+      if (input.ledger) await ledger.writeOutcome(input.ledger, input.callRef, "failed");
+      throw err;
+    }
+  }
+  let settled;
+  try {
+    settled = await waitForTerminalTask(
+      () => api.waitForTask(taskId!, context), waitTimeoutMs,
+    );
+  } catch (error) {
+    // 停止等待不代表外部调用失败；包括 reused intent 在内均保留 unknown。
+    if (input.ledger && await ledger.getStatus(input.callRef, input.ledger.dbPath) === "intent") {
+      await ledger.writeOutcome(input.ledger, input.callRef, "unknown");
+    }
+    throw error;
+  }
+  const outcome = (settled as { state?: { outcome?: { status: string; result?: SubagentResult } } }).state?.outcome;
+  // 账本 outcome：新任务直接写；reused 但账本非 success 时补账（unknown→success reconcile）
+  if (input.ledger) {
+    const usageOf = (result: unknown): string | undefined => {
+      const u = (result as { usage?: Record<string, number | boolean | undefined> })?.usage;
+      if (!u) return undefined;
+      return u.input !== undefined
+        ? `input_tokens=${u.input};output_tokens=${u.output};cache_read=${u.cacheRead ?? 0}` +
+          (u.costTotal !== undefined ? `;cost_usd=${u.costTotal}` : "")
+        : `prompt_tokens=${u.promptTokens};completion_tokens=${u.completionTokens}`;
+    };
+    const currentStatus = await ledger.getStatus(input.callRef, input.ledger.dbPath);
+    if (outcome?.status === "completed" && outcome.result) {
+      const usageBasis = usageOf(outcome.result);
+      if (currentStatus === "intent") {
+        await ledger.writeOutcome(input.ledger, input.callRef, "success", usageBasis);
+      } else if (currentStatus === "unknown") {
+        await ledger.reconcile(input.callRef, usageBasis, input.ledger.dbPath);
+      }
+      // 已 success/failed 不改写
+    } else {
+      if (outcome?.status === "failed" || outcome?.status === "aborted") {
+        if (currentStatus === "intent") await ledger.writeOutcome(input.ledger, input.callRef, "failed");
+      } else if (currentStatus === "intent") {
+        await ledger.writeOutcome(input.ledger, input.callRef, "unknown");
+      }
+    }
+  }
+  if (!outcome || outcome.status !== "completed" || !outcome.result) {
+    throw new Error(`子任务未成功完成: ${outcome?.status ?? "unknown"}`);
+  }
+  return { taskId: String(taskId), result: outcome.result as unknown as JsonValue, reused };
+}
+
 export function toDurableTools(specs: readonly ToolSpec[]): ToolRegistration[] {
   return specs.map((spec) =>
     defineTool({
@@ -74,81 +174,7 @@ export function toDurableTools(specs: readonly ToolSpec[]): ToolRegistration[] {
       async execute(args, api, context) {
         const extras = {
           memo: (name: string, candidate: JsonValue) => api.memo(name, candidate, context),
-          dispatch: async (input: SubagentInput) => {
-            const kind = subagentTask.definition.name;
-            // 跨调用去重：扫描本 conversation 下同 kind 任务的 input.callRef，命中则复用既有任务
-            //（memo 存在工具任务上、不跨调用，不能用于跨调用去重）
-            let taskId: string | undefined;
-            let cursor: Record<string, JsonValue> | undefined;
-            do {
-              const page = await api.commit(
-                (tx) => tx.scanTasks({ conversationId: api.conversationId, kind }, 100, cursor),
-                context,
-              );
-              for (const record of page.items) {
-                const rec = record as { id: unknown; input?: { callRef?: string } };
-                if (rec.input?.callRef === input.callRef) {
-                  taskId = String(rec.id);
-                  break;
-                }
-              }
-              cursor = page.next;
-            } while (cursor !== undefined && taskId === undefined);
-            const reused = taskId !== undefined;
-            if (taskId === undefined) {
-              // 新付费任务：intent 先于 createTask；intent 失败则不创建任务
-              if (input.ledger) {
-                await writeIntent(input.ledger, input.callRef);
-              }
-              try {
-                taskId = String(
-                  await api.createTask(subagentTask, input, { ownership: { kind: "conversation" } }, context),
-                );
-              } catch (err) {
-                // createTask 失败：付费请求未发出，记 failed
-                if (input.ledger) await writeOutcome(input.ledger, input.callRef, "failed");
-                throw err;
-              }
-            }
-            let settled = await api.waitForTask(taskId as never, context);
-            // 防御：waitForTask 在竞态下可能返回 running 快照（resume 场景），循环等 terminal
-            for (let i = 0; i < 100 && (settled as { state?: { status?: string } }).state?.status !== "terminal"; i++) {
-              await new Promise((r) => setTimeout(r, 50));
-              settled = await api.waitForTask(taskId as never, context);
-            }
-            const outcome = (settled as { state?: { outcome?: { status: string; result?: SubagentResult } } }).state?.outcome;
-            // 账本 outcome：新任务直接写；reused 但账本非 success 时补账（unknown→success reconcile）
-            if (input.ledger) {
-              const usageOf = (result: unknown): string | undefined => {
-                const u = (result as { usage?: Record<string, number | boolean | undefined> })?.usage;
-                if (!u) return undefined;
-                return u.input !== undefined
-                  ? `input_tokens=${u.input};output_tokens=${u.output};cache_read=${u.cacheRead ?? 0}` +
-                    (u.costTotal !== undefined ? `;cost_usd=${u.costTotal}` : "")
-                  : `prompt_tokens=${u.promptTokens};completion_tokens=${u.completionTokens}`;
-              };
-              const currentStatus = await getLedgerStatus(input.callRef, input.ledger.dbPath);
-              if (outcome?.status === "completed" && outcome.result) {
-                const usageBasis = usageOf(outcome.result);
-                if (currentStatus === "intent") {
-                  await writeOutcome(input.ledger, input.callRef, "success", usageBasis);
-                } else if (currentStatus === "unknown") {
-                  await reconcileLedger(input.callRef, usageBasis, input.ledger.dbPath);
-                }
-                // 已 success/failed 不改写
-              } else if (!reused) {
-                if (outcome?.status === "failed" || outcome?.status === "aborted") {
-                  if (currentStatus === "intent") await writeOutcome(input.ledger, input.callRef, "failed");
-                } else if (currentStatus === "intent") {
-                  await writeOutcome(input.ledger, input.callRef, "unknown");
-                }
-              }
-            }
-            if (!outcome || outcome.status !== "completed" || !outcome.result) {
-              throw new Error(`子任务未成功完成: ${outcome?.status ?? "unknown"}`);
-            }
-            return { taskId: String(taskId), result: outcome.result as unknown as JsonValue, reused };
-          },
+          dispatch: (input: SubagentInput) => dispatchSubagent(input, api, context),
         };
         const result = await spec.execute(args, extras);
         return {

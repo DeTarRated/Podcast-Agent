@@ -82,6 +82,8 @@ export interface SimulatedBehavior {
   crashOnFirstCall?: boolean;
   /** 注入模拟结果（跳过真实模型调用） */
   mockOutput?: string;
+  /** 模拟长任务延迟，验证调度层不会把 pending 误判为 unknown */
+  delayMs?: number;
   mockUsage?: SubagentResult["usage"];
 }
 
@@ -102,6 +104,7 @@ async function runSubagent(
       throw new Error("simulated crash before output");
     }
     if (behavior.mockOutput !== undefined) {
+      if (behavior.delayMs) await new Promise((resolve) => setTimeout(resolve, behavior.delayMs));
       if (!existsSync(input.outputPath)) {
         mkdirSync(dirname(input.outputPath), { recursive: true });
         writeFileSync(input.outputPath, behavior.mockOutput, { flag: "wx" });
