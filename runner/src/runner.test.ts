@@ -3,6 +3,7 @@
 // 模拟场景：
 // - 打开存储 → 提交输入 → settle 完成（mock 固定响应模型）
 // - 关闭后重开同一 SQLite 存储：root 一致、checkpoint 可读、继续提交可用
+// - 预算模式强制关闭请求重试及自动compaction，即使用户配置和模型override尝试重新开启
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -12,7 +13,7 @@ import { join } from "node:path";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
-import { Runner } from "./runner.ts";
+import { budgetSafeHarnessSettings, Runner } from "./runner.ts";
 import { pipelineTools } from "./conversation.ts";
 
 function makeFaux() {
@@ -23,6 +24,22 @@ function makeFaux() {
 }
 
 const MODEL = { provider: "mock", modelId: "mock-main" };
+
+test("预算模式关闭模型自动重试与自动compaction", () => {
+  const settings = budgetSafeHarnessSettings({
+    retry: { enabled: true, maxRetries: 4, baseDelayMs: 100 },
+    stream: { maxRetries: 3, maxRetryDelayMs: 100 },
+    compaction: {
+      enabled: true, reserveTokens: 100, keepRecentTokens: 100, backgroundTokens: 100,
+      modelOverrides: { "deepseek/model": { enabled: true } },
+    },
+  });
+  assert.equal(settings.retry?.enabled, false);
+  assert.equal(settings.retry?.maxRetries, 0);
+  assert.equal(settings.stream?.maxRetries, 0);
+  assert.equal(settings.compaction?.enabled, false);
+  assert.deepEqual(settings.compaction?.modelOverrides, {});
+});
 
 test("打开→提交→完成；重开→checkpoint 可读→继续提交", async () => {
   const dir = mkdtempSync(join(tmpdir(), "runner-test-"));

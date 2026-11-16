@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS ledger (
     model        TEXT,
     usage_basis  TEXT,                            -- 用量依据（音频秒数、token 数）
     amount_est   REAL,                            -- 金额估算；未知为 NULL，不记零
+    request_started INTEGER NOT NULL DEFAULT 0 CHECK (request_started IN (0,1)), -- 外部请求单次claim，防恢复重发
     call_ref     TEXT NOT NULL UNIQUE,            -- 调用标识（本地防重复键，不代表服务端幂等）
     status       TEXT NOT NULL DEFAULT 'intent'
                  CHECK (status IN ('intent','success','failed','unknown'))

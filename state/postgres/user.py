@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import secrets
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -274,6 +275,14 @@ def set_budget(
         raise AuthError("预算 scope 或 period 非法")
     if max_amount is None and max_running is None:
         raise AuthError("预算至少限制金额或 running 数量之一")
+    if max_amount is not None:
+        try:
+            amount = Decimal(str(max_amount))
+        except (InvalidOperation, ValueError):
+            raise AuthError("max_amount 必须为有限的非负金额") from None
+        if not amount.is_finite() or amount < 0:
+            raise AuthError("max_amount 必须为有限的非负金额")
+        max_amount = amount
     if max_running is not None and max_running <= 0:
         raise AuthError("max_running 必须为正数")
     with conn.transaction():

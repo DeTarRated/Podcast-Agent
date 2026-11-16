@@ -13,10 +13,16 @@ import { runDelivery } from "./drive-delivery.ts";
 import type { RunResult } from "./bash.ts";
 
 function fakeChild(exitCode: number): typeof spawn {
-  return (() => {
+  return ((command: string) => {
     const child = new EventEmitter() as any;
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
+    child.kill = () => true;
+    if (command === "flock") {
+      // 共享锁握手成功后保持存活，直到父进程 release。
+      process.nextTick(() => child.stdout.write("podcast-agent-run-lock\n"));
+      return child;
+    }
     process.nextTick(() => {
       child.stdout.end("done");
       child.stderr.end();

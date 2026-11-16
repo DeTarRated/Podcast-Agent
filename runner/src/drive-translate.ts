@@ -5,24 +5,25 @@
 // 付费调用：翻译一次（约 3.4 万 tokens）；账本 intent/outcome 由 dispatch 写入。
 //
 // .env 必须在任何 pi-ai import 之前加载（envApiKeyAuth 在 createModels 时读环境）。
-import { readFileSync } from "node:fs";
+// 人工可执行的真实付费入口：与所有调度入口共享运行锁并受暂停标记约束。
+import { spawn } from "node:child_process";
+
 import { resolve } from "node:path";
 
 const REPO_ROOT = resolve(import.meta.dirname, "../..");
-const env = Object.fromEntries(
-  readFileSync(resolve(REPO_ROOT, ".env"), "utf8")
-    .split("\n")
-    .filter((l) => /^[A-Z_]+=/.test(l))
-    .map((l) => { const i = l.indexOf("="); return [l.slice(0, i).trim(), l.slice(i + 1).trim()] as [string, string]; }),
-);
-for (const [k, v] of Object.entries(env)) {
-  if (!(k in process.env)) process.env[k] = v;
-}
-
+const { loadRepoEnv } = await import("./env.ts");
+loadRepoEnv();
+const env = process.env;
 const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
 const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
 const { Runner } = await import("./runner.ts");
+const { ensureRunLock } = await import("./run-lock.ts");
+const { assertBusinessRunning } = await import("./pause.ts");
 import type { ToolSpec } from "./tool-spec.ts";
+
+assertBusinessRunning();
+const runLock = await ensureRunLock(spawn);
+if (runLock === null) throw new Error("共享运行锁被其他调度入口持有，拒绝启动真实模型调用");
 const [tProvider, tModel] = (env.PODCAST_MODEL_TRANSLATE ?? "deepseek/deepseek-flash").split("/");
 const [mProvider, mModel] = (env.PODCAST_MODEL_REVIEW ?? "deepseek/deepseek-v4-pro").split("/");
 
@@ -50,6 +51,7 @@ const translateTool: ToolSpec = {
       ],
       ledger: {
         episodeId: 1, purpose: "translate", provider: tProvider, model: tModel,
+        dbPath: process.env.PODCAST_AGENT_DB,
       },
     });
     const result = r.result as { usage: { input: number; output: number; costTotal: number } };
@@ -64,6 +66,7 @@ const runner = await Runner.open(BACKGROUND_CONTEXT, {
   dbPath: resolve(REPO_ROOT, "var/episodes/1/runner.sqlite"),
   models,
   model: { provider: mProvider, modelId: mModel },
+  budget: { episodeId: 1, dbPath: process.env.PODCAST_AGENT_DB },
   tools: [translateTool],
 });
 
@@ -74,3 +77,4 @@ const out = await runner.submit(
 );
 console.log("结果:", JSON.stringify(out));
 await runner.close(BACKGROUND_CONTEXT);
+runLock.release();

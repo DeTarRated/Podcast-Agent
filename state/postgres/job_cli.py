@@ -6,8 +6,10 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
+from state import allowlist
 from state.db import default_db_path
 from state.postgres import db, job, migrations
+from state.postgres.budget import open_authoritative_ledger
 from state.postgres.migrate_from_sqlite import sync_episode
 
 
@@ -49,7 +51,52 @@ def main(argv=None) -> int:
     try:
         migrations.migrate(conn)
         if args.command == "enqueue-episode":
+            allow = allowlist.load()
+            if allow is not None:
+                # 直接入队也必须贯穿 feed/guid 维度：与 poll 路径同源，防止绕过白名单。
+                from state import db as sqlite_db
+
+                sqlite_path = Path(default_db_path())
+                if not sqlite_path.exists():
+                    raise job.JobError("白名单启用时入队要求可读 SQLite 业务库")
+                lite = sqlite_db.connect(sqlite_path)
+                try:
+                    ep = lite.execute(
+                        "SELECT guid, feed FROM episode WHERE id = ?", (args.episode_id,)
+                    ).fetchone()
+                    if ep is None:
+                        raise job.JobError(f"Episode 不存在于业务库: {args.episode_id}")
+                    if ep["guid"] != args.guid:
+                        raise job.JobError(
+                            f"入队 guid 与权威记录不一致: 传入={args.guid} 权威={ep['guid']}"
+                        )
+                    feed_row = lite.execute(
+                        "SELECT id FROM feed WHERE feed_url = ?", (ep["feed"],)
+                    ).fetchone()
+                finally:
+                    lite.close()
+                allowed = allowlist.episode_allowed(allow, args.episode_id)
+                if feed_row is not None:
+                    allowed = allowed and allowlist.feed_allowed(allow, int(feed_row["id"]))
+                elif allowlist.feed_ids(allow) is not None:
+                    allowed = False
+                allowed = allowed and allowlist.guid_allowed(allow, ep["feed"], ep["guid"])
+                if not allowed:
+                    # 白名单启用时范围外 Episode 不入队；显式标记由调用方决定继续或停止。
+                    print(json.dumps(
+                        {"status": "success", "data": {"skipped": "not_in_allowlist"}},
+                        ensure_ascii=False,
+                    ))
+                    return 0
             sync_episode(conn, Path(default_db_path()), args.episode_id)
+            synced = conn.execute(
+                "SELECT guid FROM episode WHERE id = %s", (args.episode_id,)
+            ).fetchone()
+            if synced is None or synced["guid"] != args.guid:
+                raise job.JobError(
+                    f"入队 guid 与权威记录不一致: 传入={args.guid} "
+                    f"权威={synced['guid'] if synced else '缺失'}"
+                )
             payload = {"episode_id": args.episode_id, "guid": args.guid}
             if args.estimated_cost is not None:
                 payload["estimated_cost"] = args.estimated_cost
@@ -62,13 +109,21 @@ def main(argv=None) -> int:
                 budget=Decimal(args.budget) if args.budget is not None else None,
             )
         elif args.command == "claim":
-            result = job.claim_job(
-                conn,
-                worker_id=args.worker_id,
-                now=args.now,
-                lease_seconds=args.lease_seconds,
-                kinds=args.kinds.split(",") if args.kinds else None,
-            )
+            ledger_conn = open_authoritative_ledger()
+            try:
+                allow = allowlist.load()
+                result = job.claim_job(
+                    conn,
+                    worker_id=args.worker_id,
+                    now=args.now,
+                    lease_seconds=args.lease_seconds,
+                    kinds=args.kinds.split(",") if args.kinds else None,
+                    allowed_episode_ids=allowlist.episode_ids(allow),
+                    allowed_job_ids=allowlist.job_ids(allow),
+                    ledger_conn=ledger_conn,
+                )
+            finally:
+                ledger_conn.close()
         elif args.command == "complete":
             result = job.complete_job(
                 conn,

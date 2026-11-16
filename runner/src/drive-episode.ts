@@ -1,24 +1,25 @@
 // 单期自动执行入口：node --experimental-strip-types src/drive-episode.ts <episode_id>
 // 真实转写与模型调用均为 unsafe；样本或批量历史不得用本入口无控制触发。
-import { readFileSync } from "node:fs";
+// 人工直接启动同样竞争共享运行锁；由队列启动时经 PODCAST_RUN_LOCK_TOKEN 识别父进程持锁。
+import { spawn } from "node:child_process";
+
 import { resolve } from "node:path";
 
 const episodeId = Number(process.argv[2]);
 if (!Number.isInteger(episodeId) || episodeId <= 0) throw new Error("用法: drive-episode.ts <episode_id>");
 
 const REPO_ROOT = resolve(import.meta.dirname, "../..");
-const env = Object.fromEntries(
-  readFileSync(resolve(REPO_ROOT, ".env"), "utf8")
-    .split("\n")
-    .filter((line) => /^[A-Z_]+=/.test(line))
-    .map((line) => {
-      const index = line.indexOf("=");
-      return [line.slice(0, index).trim(), line.slice(index + 1).trim()] as [string, string];
-    }),
-);
-for (const [key, value] of Object.entries(env)) {
-  if (!(key in process.env)) process.env[key] = value;
-}
+// 与所有驱动入口一致：任何锁/暂停判断之前完成统一 .env 加载（格式错误失败关闭）。
+const { loadRepoEnv } = await import("./env.ts");
+loadRepoEnv();
+const env = process.env;
+
+const { ensureRunLock } = await import("./run-lock.ts");
+const { assertBusinessRunning } = await import("./pause.ts");
+const runLock = await ensureRunLock(spawn);
+if (runLock === null) throw new Error("共享运行锁被其他调度入口持有，拒绝启动真实模型调用");
+// 阶段级暂停检查：持锁后、打开 Runner 之前。
+assertBusinessRunning();
 
 const [{ builtinModels }, { BACKGROUND_CONTEXT }, { Runner }, { episodeTools, episodePrompt }, { runCommand }] =
   await Promise.all([
@@ -40,7 +41,8 @@ const runner = await Runner.open(BACKGROUND_CONTEXT, {
   dbPath: resolve(workspace, "runner-auto.sqlite"),
   models: builtinModels(),
   model: { provider, modelId },
-  tools: episodeTools(episodeId),
+  budget: { episodeId, dbPath: process.env.PODCAST_AGENT_DB },
+  tools: episodeTools(episodeId, { dbPath: process.env.PODCAST_AGENT_DB }),
 });
 try {
   const outcome = await runner.submit(BACKGROUND_CONTEXT, episodePrompt({
@@ -63,4 +65,5 @@ try {
   }
 } finally {
   await runner.close(BACKGROUND_CONTEXT);
+  runLock.release();
 }

@@ -8,7 +8,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 _LEGACY_TABLES = {"episode", "artifact", "ledger"}
 
@@ -185,6 +185,25 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
         raise
 
 
+def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
+    """账本增加一次性外部请求claim；旧intent默认视为已claim以禁止恢复重发。"""
+    if conn.in_transaction:
+        raise MigrationError("迁移前存在未提交事务；请先提交或回滚")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(ledger)")}
+        if "request_started" not in columns:
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN request_started INTEGER NOT NULL DEFAULT 1 "
+                "CHECK (request_started IN (0,1))"
+            )
+        conn.execute("PRAGMA user_version=4")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def migrate(conn: sqlite3.Connection) -> None:
     """将空库或受支持旧库迁移到最新版本；重复调用无副作用。"""
     version = int(conn.execute("PRAGMA user_version").fetchone()[0])
@@ -197,6 +216,9 @@ def migrate(conn: sqlite3.Connection) -> None:
         version = 2
     if version == 2:
         _migrate_v2_to_v3(conn)
+        version = 3
+    if version == 3:
+        _migrate_v3_to_v4(conn)
         return
     if version != 0:
         raise MigrationError(f"不支持的数据库版本: {version}")
@@ -214,3 +236,4 @@ def migrate(conn: sqlite3.Connection) -> None:
     _migrate_legacy_to_v1(conn)
     _migrate_v1_to_v2(conn)
     _migrate_v2_to_v3(conn)
+    _migrate_v3_to_v4(conn)

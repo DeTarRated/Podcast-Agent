@@ -28,6 +28,10 @@ def main(argv=None) -> int:
     poll.add_argument("--feed-id", type=int)
     poll.add_argument("--now")
     poll.add_argument("--classify", action="store_true", help="对新候选启用 Chelsea 付费分类")
+    poll.add_argument(
+        "--max-classify", type=int, default=None,
+        help="本轮分类调用上限；超出后候选保留 pending，供下一轮处理",
+    )
     args = parser.parse_args(argv)
     _load_dotenv()
     conn = db.connect(args.db) if args.db else db.open_default()
@@ -50,15 +54,22 @@ def main(argv=None) -> int:
             }
         else:
             classifier = DeepSeekClassifier.from_env() if args.classify else None
+            if args.max_classify is not None and args.max_classify < 0:
+                raise ValueError("--max-classify 不能为负数")
             result = poller.poll_all(
-                conn, now=args.now, feed_id=args.feed_id, classifier=classifier
+                conn, now=args.now, feed_id=args.feed_id, classifier=classifier,
+                max_classify=args.max_classify,
             )
     except (ValueError, sqlite3.Error, poller.DiscoveryError) as exc:
         result = {"status": "failed", "error": str(exc)}
     finally:
         conn.close()
-    print(json.dumps(result, ensure_ascii=False))
-    return 0 if result["status"] == "success" else 1
+    # 统一 envelope：与 job_cli/review/delivery 一致，调用方可严格校验 status+data。
+    if result.get("status") == "success":
+        print(json.dumps({"status": "success", "data": result}, ensure_ascii=False))
+        return 0
+    print(json.dumps({"status": "failed", "error": result.get("error", "轮询失败")}, ensure_ascii=False))
+    return 1
 
 
 if __name__ == "__main__":

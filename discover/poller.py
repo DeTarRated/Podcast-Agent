@@ -11,7 +11,7 @@ from typing import Optional
 import feedparser
 import httpx
 
-from state import discovery, episode, feed as feed_state
+from state import allowlist, discovery, episode, feed as feed_state
 from discover.classify import ClassificationError
 
 
@@ -58,6 +58,8 @@ def _process_entry(
     *,
     baseline: bool,
     classifier=None,
+    allow=None,
+    classify_budget: Optional[dict] = None,
 ) -> None:
     if values["guid"] is None:
         result["invalid"] += 1
@@ -68,6 +70,7 @@ def _process_entry(
     conn.execute("BEGIN IMMEDIATE")
     try:
         existing = discovery.get_candidate(conn, feed["id"], values["guid"])
+        created = existing is None
         if existing is not None:
             result["duplicates"] += 1
             if existing["status"] != "pending" or not values["enclosure"]:
@@ -83,10 +86,13 @@ def _process_entry(
             )
             result["new_candidates"] += 1
         if baseline:
-            discovery.mark_candidate(
-                conn, candidate_id, status="skipped", reason="initial_feed_baseline", now=now
-            )
-            result["skipped"] += 1
+            # 仅本轮新插入的候选标记基线跳过；既有 pending 等记录保持原状，
+            # 中断重做时不得把存量候选无声覆盖为 skipped。
+            if created:
+                discovery.mark_candidate(
+                    conn, candidate_id, status="skipped", reason="initial_feed_baseline", now=now
+                )
+                result["skipped"] += 1
             conn.commit()
             return
         if not values["enclosure"]:
@@ -94,6 +100,15 @@ def _process_entry(
                 conn, candidate_id, status="failed", reason="缺少音频 enclosure", now=now
             )
             result["invalid"] += 1
+            conn.commit()
+            return
+        if allow is not None and not allowlist.guid_allowed(allow, feed["feed_url"], values["guid"]):
+            discovery.mark_candidate(
+                conn, candidate_id, status="skipped", reason="not_in_allowlist", now=now
+            )
+            result["skipped"] += 1
+            result.setdefault("allowlist_skipped", 0)
+            result["allowlist_skipped"] += 1
             conn.commit()
             return
         conn.commit()
@@ -105,6 +120,12 @@ def _process_entry(
         "SELECT * FROM discovery_candidate WHERE id = ?", (candidate_id,)
     ).fetchone()
     if classifier is not None and candidate["classification_relevant"] is None:
+        # 轮内分类额度硬限：在每次付费分类前检查，耗尽后候选保持 pending 供下一轮处理。
+        if classify_budget is not None and classify_budget.get("remaining", 0) <= 0:
+            result["classify_deferred"] = result.get("classify_deferred", 0) + 1
+            return
+        if classify_budget is not None:
+            classify_budget["remaining"] -= 1
         try:
             decision = classifier(conn, candidate)
         except ClassificationError as exc:
@@ -157,20 +178,28 @@ def poll_feed(
     transport: Optional[httpx.BaseTransport] = None,
     trust_env: bool = True,
     classifier=None,
+    allow: Optional[dict] = None,
+    classify_budget: Optional[dict] = None,
 ) -> dict:
     feed = feed_state.get(conn, feed_id)
     if feed is None:
         raise DiscoveryError(f"feed 不存在: {feed_id}")
     if not feed["enabled"]:
-        return {"feed_id": feed_id, "status": "disabled", "new_candidates": 0, "enqueued": 0}
+        return {
+            "feed_id": feed_id, "status": "disabled", "new_candidates": 0, "enqueued": 0,
+            "failed": 0, "classification_failed": 0, "classify_deferred": 0,
+        }
     headers = {
         "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml",
         "User-Agent": "podcast-agent/discovery",
     }
-    if feed["etag"]:
-        headers["If-None-Match"] = feed["etag"]
-    if feed["last_modified"]:
-        headers["If-Modified-Since"] = feed["last_modified"]
+    # 基线入口取完整响应：bootstrap_pending 期间绝不携带条件头，
+    # 否则中断重做时若服务器对条件头回 304，会把不完整的历史当基线成功。
+    if not feed["bootstrap_pending"]:
+        if feed["etag"]:
+            headers["If-None-Match"] = feed["etag"]
+        if feed["last_modified"]:
+            headers["If-Modified-Since"] = feed["last_modified"]
     with httpx.Client(
         timeout=30.0, transport=transport, trust_env=trust_env, follow_redirects=True
     ) as client:
@@ -182,6 +211,9 @@ def poll_feed(
             "new_candidates": 0,
             "enqueued": 0,
             "duplicates": 0,
+            "failed": 0,
+            "classification_failed": 0,
+            "classify_deferred": 0,
             "episode_ids": [],
         }
     if response.status_code != 200:
@@ -191,6 +223,8 @@ def poll_feed(
     if parsed.bozo and not parsed.entries and not parsed.feed:
         raise DiscoveryError(f"feed 解析失败: {parsed.bozo_exception}")
     baseline = bool(feed["bootstrap_pending"])
+    if allow is None:
+        allow = allowlist.load()
     result = {
         "feed_id": feed_id,
         "status": "baseline" if baseline else "ok",
@@ -201,13 +235,15 @@ def poll_feed(
         "skipped": 0,
         "classified": 0,
         "classification_failed": 0,
+        "classify_deferred": 0,
         "episode_ids": [],
         "warnings": [],
     }
     for entry in parsed.entries:
         _process_entry(
             conn, feed, _entry_values(entry), now, result,
-            baseline=baseline, classifier=classifier,
+            baseline=baseline, classifier=classifier, allow=allow,
+            classify_budget=classify_budget,
         )
     feed_state.record_success(
         conn,
@@ -227,6 +263,7 @@ def poll_all(
     transport: Optional[httpx.BaseTransport] = None,
     trust_env: bool = True,
     classifier=None,
+    max_classify: Optional[int] = None,
 ) -> dict:
     timestamp = now or episode.utcnow_iso()
     if feed_id is None:
@@ -234,6 +271,11 @@ def poll_all(
     else:
         selected = feed_state.get(conn, feed_id)
         feeds = [selected] if selected is not None and selected["enabled"] else []
+    allow = allowlist.load()
+    if allow is not None:
+        # 白名单启用时只轮询允许的 feed；被过滤的 feed 保持未轮询状态（last_checked_at 不变）。
+        feeds = [feed for feed in feeds if allowlist.feed_allowed(allow, feed["id"])]
+    classify_budget = None if max_classify is None else {"remaining": max_classify}
     items = []
     for feed in feeds:
         try:
@@ -244,6 +286,7 @@ def poll_all(
                 transport=transport,
                 trust_env=trust_env,
                 classifier=classifier,
+                classify_budget=classify_budget,
             )
         except (DiscoveryError, httpx.HTTPError, ValueError, sqlite3.Error) as exc:
             error = str(exc)[:1000]
@@ -254,6 +297,10 @@ def poll_all(
                 "error": error,
                 "new_candidates": 0,
                 "enqueued": 0,
+                # 失败条目同样给出计数字段，业务循环才能报出 feed_failed 而不是 schema 错误。
+                "failed": 1,
+                "classification_failed": 0,
+                "classify_deferred": 0,
             }
         items.append(result)
     return {
@@ -262,5 +309,8 @@ def poll_all(
         "new_candidates": sum(item.get("new_candidates", 0) for item in items),
         "enqueued": sum(item.get("enqueued", 0) for item in items),
         "failed": sum(item["status"] == "failed" for item in items),
+        "classification_failed": sum(item.get("classification_failed", 0) for item in items),
+        "classify_deferred": sum(item.get("classify_deferred", 0) for item in items),
+        "classify_budget": max_classify,
         "items": items,
     }

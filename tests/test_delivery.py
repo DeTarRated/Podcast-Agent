@@ -131,6 +131,24 @@ def _write_highlights(artifact, value=None):
     return json_path
 
 
+def test_publish_approved_honors_allowed_episode_ids(conn, tmp_path):
+    seeded = _seed_approved(conn, tmp_path)
+    store = FakeStore()
+    empty = publish.publish_approved(conn, now=LATER, store=store, allowed_episode_ids=[])
+    assert empty["published"] == 0
+    assert len(store.objects) == 0
+    blocked = publish.publish_approved(
+        conn, now=LATER, store=store, allowed_episode_ids=[seeded["episode_id"] + 999]
+    )
+    assert blocked["published"] == 0
+    assert len(store.objects) == 0
+    # 未列入白名单的批准保持待发布，Episode 不推进。
+    assert episode.get(conn, seeded["episode_id"])["status"] == "approved"
+    allowed = publish.publish_approved(conn, now=LATER, store=store,
+                                       allowed_episode_ids=[seeded["episode_id"]])
+    assert allowed["published"] == 1
+
+
 def test_full_publish_library_and_signing(conn, tmp_path):
     seeded = _seed_approved(conn, tmp_path)
     store = FakeStore()

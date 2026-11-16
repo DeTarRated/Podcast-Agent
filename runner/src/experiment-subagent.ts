@@ -7,7 +7,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
-import { acquireProviderGate, releaseProviderGate } from "./provider-gate.ts";
+import { tagBudgetCall } from "./model-budget.ts";
 import { defineTask } from "@earendil-works/pi-durable";
 import type { Model } from "@earendil-works/pi-ai";
 
@@ -21,7 +21,7 @@ export interface SubagentInput {
   outputPath: string;
   /** 幂等键：同 role + inputPath 只允许一个活任务 */
   callRef: string;
-  /** 账本元数据（可选）：提供时 dispatch 适配层写 intent/outcome */
+  /** 账本元数据（真实模型必需）：dispatch 先预算写 intent，模型包装器一次性claim并回填 outcome */
   ledger?: {
     episodeId: number;
     purpose: "translate" | "review" | "research" | "highlights";
@@ -164,21 +164,26 @@ async function runSubagent(
         ? `节目元数据与参考：\n${references}\n\n已批准字幕：\n${sourceText}`
         : `调研以下缺口：\n${sourceText}`;
 
-  // 只对真实模型调用使用分布式闸门；behaviors mock 已在前面返回，不依赖 Redis。
-  const gateOwner = await acquireProviderGate(input.model.provider);
-  let message: {
+  if (!input.ledger && input.model.provider !== "mock") {
+    throw new Error("真实子代理模型调用必须提供费用账本归属");
+  }
+  if (input.ledger && (input.ledger.provider !== input.model.provider || input.ledger.model !== input.model.modelId ||
+      input.ledger.purpose !== input.role)) {
+    throw new Error("子代理账本模型/用途与实际调用不匹配");
+  }
+  const modelContext = { systemPrompt, messages: [{ role: "user", content: userContent, timestamp: Date.now() }] };
+  const taggedContext = input.ledger ? tagBudgetCall(modelContext, {
+    episodeId: input.ledger.episodeId,
+    purpose: input.ledger.purpose,
+    provider: input.ledger.provider,
+    model: input.ledger.model,
+    callRef: input.callRef,
+    dbPath: input.ledger.dbPath,
+  }) : modelContext;
+  const message = (await models.completeSimple(model, taggedContext, {})) as {
     content: Array<{ type: string; text?: string }>;
     usage: { input: number; output: number; cacheRead: number; totalTokens: number; cost: { total: number; totalFromProvider?: boolean } };
   };
-  try {
-    message = (await models.completeSimple(
-      model,
-      { systemPrompt, messages: [{ role: "user", content: userContent, timestamp: Date.now() }] },
-      {},
-    )) as any;
-  } finally {
-    await releaseProviderGate(input.model.provider, gateOwner);
-  }
 
   const output = message.content
     .filter((c) => c.type === "text")

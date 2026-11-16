@@ -5,6 +5,7 @@
 - 租约 TTL 清理与过期接管
 - 多线程竞争下并发数不超限
 - Redis 故障时 acquire 失败关闭，release 不篡改业务结果
+- probe 原子化获取并释放许可，探针结束零遗留
 
 默认跳过；设置 PODCAST_TEST_REDIS=1 且本地 Redis 可用时运行。
 """
@@ -36,6 +37,12 @@ def gate():
     for key in (f"{prefix}:scribe:tokens", f"{prefix}:scribe:leases"):
         client.delete(key)
     client.close()
+
+
+def test_probe_method_acquires_and_releases_atomically(gate):
+    released = gate.release("scribe", gate.acquire("scribe", lease_seconds=30).owner)
+    assert released is True
+    assert gate.client.hgetall(f"{gate.prefix}:scribe:leases") == {}
 
 
 def test_token_bucket_concurrency_and_owner_release(gate):

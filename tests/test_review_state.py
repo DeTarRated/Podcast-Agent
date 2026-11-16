@@ -122,7 +122,8 @@ def test_legacy_migration_preserves_data_and_pauses_reviewing(tmp_path):
     assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert episode.get(conn, episode_id)["guid"] == "legacy-guid"
     assert [row["id"] for row in manifest.list_for(conn, episode_id)] == [11, 12]
-    assert conn.execute("SELECT status FROM ledger WHERE call_ref='legacy-call'").fetchone()[0] == "success"
+    legacy_ledger = conn.execute("SELECT status,request_started FROM ledger WHERE call_ref='legacy-call'").fetchone()
+    assert tuple(legacy_ledger) == ("success", 1)
     revision = conn.execute(
         "SELECT * FROM review_revision WHERE episode_id = ?", (episode_id,)
     ).fetchone()

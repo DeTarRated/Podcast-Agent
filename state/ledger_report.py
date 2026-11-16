@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import math
 import sqlite3
 from typing import Optional
 
@@ -17,9 +18,10 @@ def _usage_cost(usage_basis: Optional[str]) -> Optional[float]:
         key, separator, value = part.strip().partition("=")
         if separator and key == "cost_usd":
             try:
-                return float(value)
+                amount = float(value)
             except ValueError:
                 return None
+            return amount if math.isfinite(amount) and amount >= 0 else None
     return None
 
 

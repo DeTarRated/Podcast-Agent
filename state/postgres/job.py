@@ -5,9 +5,10 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from psycopg.pq import TransactionStatus
 from psycopg.types.json import Jsonb
 
-from state.postgres.budget import check_budget
+from state.postgres.budget import _amount, _estimated, check_budget
 from state.postgres.time import _now
 
 
@@ -17,6 +18,19 @@ def _json_dumps(value) -> str:
 
 class JobError(RuntimeError):
     """任务状态、租约或输入不合法。"""
+
+
+BUDGET_ADVISORY_LOCK = 7_401_125_903
+
+# 仅明确识别的 safe 类型允许过期租约被其他 worker 接管；
+# 其余类型（含未来新增）一律视为可能已发出付费调用：过期 running 转 parked/unknown 防重放，
+# 等待人工凭账本与在途证据对账恢复。
+SAFE_KINDS = frozenset({"download"})
+
+
+def _require_idle_connection(conn, operation: str) -> None:
+    if conn.info.transaction_status != TransactionStatus.IDLE:
+        raise JobError(f"{operation} 要求独占事务边界，调用前请提交或回滚当前事务")
 
 
 def enqueue_job(
@@ -34,6 +48,9 @@ def enqueue_job(
 ) -> dict:
     if not idempotency_key.strip() or max_attempts <= 0:
         raise JobError("idempotency_key 必填，max_attempts 必须为正数")
+    if budget is not None:
+        budget = _amount(budget, "job budget")
+    estimate = _estimated({"payload": payload})
     available = _now(available_at)
     with conn.transaction():
         row = conn.execute(
@@ -55,6 +72,14 @@ def enqueue_job(
             row = conn.execute(
                 "SELECT * FROM job WHERE idempotency_key = %s", (idempotency_key,)
             ).fetchone()
+            existing_estimate = _estimated(row)
+            if (
+                row["kind"] != kind
+                or row["episode_id"] != episode_id
+                or row["budget"] != budget
+                or existing_estimate != estimate
+            ):
+                raise JobError("幂等 job 的 kind/episode/estimated_cost/budget 与新请求不一致")
     conn.commit()
     return {"job": row, "reused": reused}
 
@@ -66,21 +91,59 @@ def claim_job(
     now: Optional[str | datetime] = None,
     lease_seconds: int = 300,
     kinds: Optional[list[str]] = None,
+    allowed_episode_ids: Optional[list[int]] = None,
+    allowed_job_ids: Optional[list[int]] = None,
+    ledger_conn=None,
 ) -> Optional[dict]:
     if not worker_id.strip() or lease_seconds <= 0:
         raise JobError("worker_id 必填，lease_seconds 必须为正数")
     current = _now(now)
     expires = current + timedelta(seconds=lease_seconds)
+    _require_idle_connection(conn, "claim_job")
     with conn.transaction():
+        # 全局预算锁序列化金额检查、running 预留与状态更新，避免不同 job 并发超额领取。
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (BUDGET_ADVISORY_LOCK,))
+        # 过期 running 的非 safe 任务可能已发出付费调用：park 并在 unknown 保留占用，
+        # 绝不交给另一个 worker 自动重放；恢复由人工凭账本与在途证据决定。
+        # 维护清理同样尊重白名单范围，不修改范围外记录。
+        unsafe_expired = conn.execute(
+            """
+            UPDATE job SET status = 'parked', locked_by = NULL, locked_until = NULL,
+                last_error = 'unsafe_lease_expired', updated_at = %s
+            WHERE status = 'running' AND locked_until <= %s AND kind <> ALL(%s::text[])
+              AND (%s::int[] IS NULL OR episode_id = ANY(%s::int[]))
+              AND (%s::int[] IS NULL OR id = ANY(%s::int[]))
+            RETURNING id, attempts
+            """,
+            (
+                current, current, list(SAFE_KINDS),
+                allowed_episode_ids, allowed_episode_ids,
+                allowed_job_ids, allowed_job_ids,
+            ),
+        ).fetchall()
+        for item in unsafe_expired:
+            conn.execute(
+                """
+                UPDATE job_attempt SET status = 'unknown', finished_at = %s, error = 'unsafe_lease_expired'
+                WHERE job_id = %s AND attempt_no = %s AND status = 'running'
+                """,
+                (current, item["id"], item["attempts"]),
+            )
         # 已耗尽次数的过期 running 任务不再运行，转为 parked 并留下尝试错误。
         exhausted = conn.execute(
             """
             UPDATE job SET status = 'parked', locked_by = NULL, locked_until = NULL,
                 last_error = 'lease_exhausted', updated_at = %s
             WHERE status = 'running' AND locked_until <= %s AND attempts >= max_attempts
+              AND (%s::int[] IS NULL OR episode_id = ANY(%s::int[]))
+              AND (%s::int[] IS NULL OR id = ANY(%s::int[]))
             RETURNING id, attempts
             """,
-            (current, current),
+            (
+                current, current,
+                allowed_episode_ids, allowed_episode_ids,
+                allowed_job_ids, allowed_job_ids,
+            ),
         ).fetchall()
         for item in exhausted:
             conn.execute(
@@ -98,15 +161,21 @@ def claim_job(
                 OR (status = 'running' AND locked_until <= %s)
             ) AND attempts < max_attempts
               AND (%s::text[] IS NULL OR kind = ANY(%s::text[]))
+              AND (%s::int[] IS NULL OR episode_id = ANY(%s::int[]))
+              AND (%s::int[] IS NULL OR id = ANY(%s::int[]))
             ORDER BY priority DESC, id
             FOR UPDATE SKIP LOCKED
             LIMIT 1
             """,
-            (current, current, kinds, kinds),
+            (
+                current, current, kinds, kinds,
+                allowed_episode_ids, allowed_episode_ids,
+                allowed_job_ids, allowed_job_ids,
+            ),
         ).fetchone()
         if row is None:
             return None
-        budget = check_budget(conn, row, now=current)
+        budget = check_budget(conn, row, ledger_conn=ledger_conn, now=current)
         if not budget.allowed:
             status = "retry" if budget.reason == "max_running" else "failed"
             available = budget.retry_at or current
@@ -193,7 +262,9 @@ def complete_job(
     now: Optional[str | datetime] = None,
 ) -> dict:
     current = _now(now)
+    _require_idle_connection(conn, "complete_job")
     with conn.transaction():
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (BUDGET_ADVISORY_LOCK,))
         row = _running_for_update(conn, job_id, worker_id, current)
         conn.execute(
             """
@@ -225,7 +296,9 @@ def fail_job(
     retry_base_seconds: int = 1,
 ) -> dict:
     current = _now(now)
+    _require_idle_connection(conn, "fail_job")
     with conn.transaction():
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (BUDGET_ADVISORY_LOCK,))
         row = _running_for_update(conn, job_id, worker_id, current)
         conn.execute(
             """

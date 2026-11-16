@@ -6,4 +6,6 @@ feed 配置、轮询、条件请求（ETag/304）、guid + feed 去重、历史�
 
 命令：`feed-add`、`feed-list`、`feed-disable`、`poll`。轮询只读取 feed 元数据，不下载音频；`poll --classify` 才启用 Chelsea 分类。
 
+业务白名单启用时（`PODCAST_ALLOWLIST_FILE` 指向的文件存在）：`poll_all` 只轮询 `feeds` 列出的 feed；未列入 `guids` 的候选不入队，标记 `skipped/not_in_allowlist`。基线期间绝不发送 ETag/Last-Modified 条件头，基线 304 不算成功，中断重做保留既有候选记录。
+
 分类使用 `PODCAST_MODEL_CLASSIFY`（默认 `deepseek/deepseek-flash`）和 `DEEPSEEK_API_KEY`，只发送标题／简介。候选先落库，同 call_ref 已有账本时禁止自动重发；超时或响应无法解析记 unknown。

@@ -3,7 +3,7 @@
 模拟场景：
 - 正常 POST：multipart 参数、认证头、无 Idempotency-Key、ID 先于 raw 锚定、原始响应/产物/账本/Episode 完整
 - 同 call_ref 重复触发与并发 UNIQUE 冲突：拒绝第二次 POST，不改原 outcome
-- 调用前状态、音频 hash、时长、API key 校验失败：无 intent、无 HTTP
+- 调用前状态、预算、账本读写、音频 hash、时长、API key 校验失败：无 intent、无 HTTP
 - 读超时与连接中断：outcome=unknown、Episode 不推进、后续重复调用零重发
 - HTTP 4xx / 5xx：outcome=failed、Episode=failed、单次请求、无成功产物
 - 200 非 JSON、缺 transcription_id、缺 words：不误记 success、不自动重发
@@ -26,6 +26,7 @@ import httpx
 import pytest
 
 from pipeline import scribe
+from pipeline.cost_guard import authorize_and_record_intent as REAL_COST_GUARD_AUTHORIZE
 from pipeline.download import sha256_file
 from state import db, episode, ledger, manifest
 
@@ -53,6 +54,10 @@ def _isolated_env(monkeypatch):
     """测试不读项目根 .env，key 用假值，绝不发真实请求。"""
     monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
     monkeypatch.setattr(scribe, "_DOTENV_LOADED", True)
+    monkeypatch.setattr(
+        scribe.cost_guard, "authorize_and_record_intent",
+        lambda conn, **kwargs: ledger.record_intent(conn, **kwargs),
+    )
     class FakeGate:
         def release(self, provider, owner):
             return True
@@ -128,12 +133,193 @@ def seed_intent(conn, ep_id):
     )
 
 
-def test_transcribe_success_full_flow(conn, audio, workspace):
+def test_budget_denial_prevents_scribe_http_and_intent(conn, audio, workspace, monkeypatch):
+    from state.postgres.budget import BudgetDataError
+    real_authorize = REAL_COST_GUARD_AUTHORIZE
+    from decimal import Decimal
+
     ep_id = make_episode(conn, audio)
     calls = []
+    monkeypatch.setattr(scribe.cost_guard, "authorize_and_record_intent", real_authorize)
+    monkeypatch.setattr(scribe.cost_guard, "load_limits", lambda _episode_id: [{
+        "scope": "global", "period": "day", "max_amount": Decimal("0.000001"),
+    }])
+    with pytest.raises(BudgetDataError, match="预算超限"):
+        transcribe(conn, ep_id, audio, workspace, calls,
+                   lambda req: httpx.Response(200, json=ok_payload()))
+    assert calls == []
+    assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 0
+
+
+def test_business_pause_blocks_scribe_before_intent_and_http(conn, audio, workspace, monkeypatch, tmp_path):
+    ep_id = make_episode(conn, audio)
+    calls = []
+    pause = tmp_path / "business.pause"
+    pause.write_text("paused")
+    monkeypatch.setenv("PODCAST_BUSINESS_PAUSE_FILE", str(pause))
+    with pytest.raises(RuntimeError, match="业务暂停标记存在"):
+        transcribe(conn, ep_id, audio, workspace, calls,
+                   lambda req: calls.append(req) or httpx.Response(200, json=ok_payload()))
+    assert calls == []
+    assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 0
+
+
+def test_business_pause_during_gate_window_prevents_intent_and_http(conn, audio, workspace, monkeypatch, tmp_path):
+    """gate 返回后、intent 写入前出现暂停：许可释放、无 intent、无 HTTP。"""
+    ep_id = make_episode(conn, audio)
+    calls = []
+    pause = tmp_path / "business.pause"
+    monkeypatch.setenv("PODCAST_BUSINESS_PAUSE_FILE", str(pause))
+    real_acquire = scribe.acquire_or_raise
+
+    def pausing_acquire(provider):
+        gate, decision = real_acquire(provider)
+        pause.write_text("paused in gate window\n")
+        return gate, decision
+
+    monkeypatch.setattr(scribe, "acquire_or_raise", pausing_acquire)
+    with pytest.raises(RuntimeError, match="业务暂停标记存在"):
+        transcribe(conn, ep_id, audio, workspace, calls,
+                   lambda req: calls.append(req) or httpx.Response(200, json=ok_payload()))
+    assert calls == []
+    assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 0
+
+
+def test_job_lease_lost_blocks_scribe_http_and_releases_intent(conn, audio, workspace, monkeypatch, tmp_path):
+    """队列子进程失租：Scribe 在 HTTP 前复查租约，updated=false 时零请求并释放预留。"""
+    from state import runtime_guard
+
+    ep_id = make_episode(conn, audio)
+    calls = []
+    pause = tmp_path / "business.pause"
+    monkeypatch.setenv("PODCAST_BUSINESS_PAUSE_FILE", str(pause))
+    monkeypatch.setenv("PODCAST_JOB_ID", "42")
+    monkeypatch.setenv("PODCAST_JOB_WORKER_ID", "worker-x")
+
+    class _Result:
+        returncode = 0
+        stdout = json.dumps({"status": "success", "data": {"updated": False}})
+        stderr = ""
+
+    monkeypatch.setattr(runtime_guard.subprocess, "run", lambda *a, **k: _Result())
+    with pytest.raises(RuntimeError, match="租约失效"):
+        transcribe(conn, ep_id, audio, workspace, calls,
+                   lambda req: calls.append(req) or httpx.Response(200, json=ok_payload()))
+    assert calls == []
+    # 当次预留被释放为 failed，Episode 不被残留 intent 卡住。
+    row = conn.execute("SELECT status FROM ledger").fetchone()
+    assert row["status"] == "failed"
+    assert pause.exists()
+
+
+def test_pause_during_heartbeat_window_blocks_scribe_http(conn, audio, workspace, monkeypatch, tmp_path):
+    """heartbeat 等待期间写入暂停（updated=true）：HTTP 前最终复查阻止请求并释放预留。"""
+    from state import runtime_guard
+
+    ep_id = make_episode(conn, audio)
+    calls = []
+    pause = tmp_path / "business.pause"
+    monkeypatch.setenv("PODCAST_BUSINESS_PAUSE_FILE", str(pause))
+    monkeypatch.setenv("PODCAST_JOB_ID", "42")
+    monkeypatch.setenv("PODCAST_JOB_WORKER_ID", "worker-x")
+
+    def _fake_run(*args, **kwargs):
+        pause.write_text("paused during heartbeat\n")
+
+        class _Result:
+            returncode = 0
+            stdout = json.dumps({"status": "success", "data": {"updated": True}})
+            stderr = ""
+
+        return _Result()
+
+    monkeypatch.setattr(runtime_guard.subprocess, "run", _fake_run)
+    with pytest.raises(RuntimeError, match="业务暂停标记存在"):
+        transcribe(conn, ep_id, audio, workspace, calls,
+                   lambda req: calls.append(req) or httpx.Response(200, json=ok_payload()))
+    assert calls == []
+    row = conn.execute("SELECT status FROM ledger").fetchone()
+    assert row["status"] == "failed"
+
+
+def test_heartbeat_malformed_json_fails_closed(conn, audio, workspace, monkeypatch, tmp_path):
+    """heartbeat 返回合法但非 object 的 JSON：统一按失租处理，写暂停并零 HTTP。"""
+    from state import runtime_guard
+
+    ep_id = make_episode(conn, audio)
+    calls = []
+    pause = tmp_path / "business.pause"
+    monkeypatch.setenv("PODCAST_BUSINESS_PAUSE_FILE", str(pause))
+    monkeypatch.setenv("PODCAST_JOB_ID", "42")
+    monkeypatch.setenv("PODCAST_JOB_WORKER_ID", "worker-x")
+
+    class _Result:
+        returncode = 0
+        stdout = json.dumps(["not", "an", "object"])
+        stderr = ""
+
+    monkeypatch.setattr(runtime_guard.subprocess, "run", lambda *a, **k: _Result())
+    with pytest.raises(RuntimeError, match="租约失效"):
+        transcribe(conn, ep_id, audio, workspace, calls,
+                   lambda req: calls.append(req) or httpx.Response(200, json=ok_payload()))
+    assert calls == []
+    assert pause.exists()
+    row = conn.execute("SELECT status FROM ledger").fetchone()
+    assert row["status"] == "failed"
+
+
+@pytest.mark.parametrize("failure", ["postgres_read", "sqlite_read", "sqlite_commit"])
+def test_budget_guard_storage_failure_prevents_scribe_http(conn, audio, workspace, monkeypatch, failure):
+    from decimal import Decimal
+    from state.postgres.budget import BudgetDataError
+    real_authorize = REAL_COST_GUARD_AUTHORIZE
+
+    ep_id = make_episode(conn, audio)
+    calls = []
+    monkeypatch.setattr(scribe.cost_guard, "authorize_and_record_intent", real_authorize)
+    if failure == "postgres_read":
+        def fail_connect():
+            raise RuntimeError("simulated postgres unavailable")
+        monkeypatch.setattr(scribe.cost_guard.postgres_db, "connect", fail_connect)
+    elif failure == "sqlite_read":
+        monkeypatch.setattr(scribe.cost_guard, "load_limits", lambda _episode_id: [{
+            "scope": "global", "period": "day", "max_amount": Decimal("1"),
+        }])
+        def fail_spend(*_args, **_kwargs):
+            raise BudgetDataError("simulated SQLite ledger read failure")
+        monkeypatch.setattr(scribe.cost_guard, "_scope_spend", fail_spend)
+    else:
+        monkeypatch.setattr(scribe.cost_guard, "load_limits", lambda _episode_id: [])
+        def deny_commit(action, arg1, _arg2, _database, _trigger):
+            if action == sqlite3.SQLITE_TRANSACTION and arg1 == "COMMIT":
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+        conn.set_authorizer(deny_commit)
+    with pytest.raises(Exception):
+        transcribe(conn, ep_id, audio, workspace, calls,
+                   lambda req: httpx.Response(200, json=ok_payload()))
+    assert calls == []
+    assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 0
+
+
+def test_transcribe_success_full_flow(conn, audio, workspace, monkeypatch):
+    real_authorize = REAL_COST_GUARD_AUTHORIZE
+
+    ep_id = make_episode(conn, audio)
+    monkeypatch.setattr(scribe.cost_guard, "authorize_and_record_intent", real_authorize)
+    monkeypatch.setattr(scribe.cost_guard, "load_limits", lambda _episode_id: [])
+    sqlite_path = conn.execute("PRAGMA database_list").fetchone()[2]
+    calls = []
     raw_bytes = json.dumps(ok_payload()).encode()
-    result = transcribe(conn, ep_id, audio, workspace, calls,
-                        lambda req: httpx.Response(200, content=raw_bytes))
+    def handler(req):
+        independent = sqlite3.connect(sqlite_path)
+        try:
+            row = independent.execute("SELECT status,amount_est FROM ledger").fetchone()
+            assert row[0] == "intent" and row[1] > 0
+        finally:
+            independent.close()
+        return httpx.Response(200, content=raw_bytes)
+    result = transcribe(conn, ep_id, audio, workspace, calls, handler)
 
     assert result.status == "success"
     assert result.transcription_id == TID

@@ -193,6 +193,8 @@ def main(argv=None) -> int:
     release = sub.add_parser("release")
     release.add_argument("--provider", required=True)
     release.add_argument("--owner", required=True)
+    probe = sub.add_parser("probe", help="原子化获取并释放许可，用于健康检查")
+    probe.add_argument("--provider", required=True)
     args = parser.parse_args(argv)
     gate = ProviderGate.from_env()
     try:
@@ -206,6 +208,16 @@ def main(argv=None) -> int:
             )
             result = {"status": "success", "data": asdict(decision)}
             code = 0 if decision.allowed else 2
+        elif args.command == "probe":
+            # 原子化 acquire+release：健康检查无需在调用方保存 owner，杜绝泄漏。
+            decision = gate.acquire(args.provider, lease_seconds=30)
+            if not decision.allowed:
+                result = {"status": "failed", "error": "provider_rate_limited"}
+                code = 2
+            else:
+                released = gate.release(args.provider, decision.owner)
+                result = {"status": "success", "data": {"allowed": True, "released": released}}
+                code = 0
         else:
             released = gate.release(args.provider, args.owner)
             result = {"status": "success", "data": {"released": released}}

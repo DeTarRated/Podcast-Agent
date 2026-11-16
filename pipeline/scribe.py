@@ -25,7 +25,8 @@ import httpx
 
 from pipeline.download import sha256_file
 from pipeline.provider_gate import acquire_or_raise
-from state import db, episode, ledger, manifest
+from pipeline import cost_guard
+from state import db, episode, ledger, manifest, runtime_guard
 
 API_BASE = "https://api.elevenlabs.io"
 TRANSCRIBE_URL = f"{API_BASE}/v1/speech-to-text"
@@ -190,6 +191,8 @@ def transcribe(
     rebill_attempt: Optional[int] = None,
 ) -> ScribeResult:
     """同步转写一期音频；rebill 仅允许从既有 unknown 显式新建付费尝试。"""
+    # 付费边界失败关闭：暂停标记存在时不发任何供应商请求、不写 intent。
+    runtime_guard.assert_business_running()
     audio_path = Path(audio_path)
     workspace = Path(workspace)
     ep = episode.get(conn, episode_id)
@@ -237,8 +240,15 @@ def transcribe(
     amount = duration / 3600 * USD_PER_HOUR
     # 先过分布式限流／并发闸门，再写付费 intent；被限流时不产生调用记录或外部请求。
     provider_gate, gate_decision = acquire_or_raise("scribe")
+    # gate→intent 窗口复查：限流许可返回后、账本写入前暂停标记可能出现；
+    # 暂停时释放许可且不写 intent。
     try:
-        ledger.record_intent(
+        runtime_guard.assert_business_running()
+    except RuntimeError:
+        provider_gate.release("scribe", gate_decision.owner)
+        raise
+    try:
+        cost_guard.authorize_and_record_intent(
             conn,
             episode_id=episode_id,
             purpose="transcribe",
@@ -261,6 +271,16 @@ def transcribe(
         raise
 
     try:
+        # intent 落库与发起供应商请求之间的窗口内可能出现暂停标记或失租，HTTP 前复查；
+        # 暂停/失租时先释放本次预留再抛错，避免 Episode 被残留 intent 卡住无法恢复。
+        try:
+            runtime_guard.assert_business_running()
+            runtime_guard.assert_job_lease_alive()
+            # heartbeat 的等待窗内同样可能出现暂停标记，供应商调用前最终复查。
+            runtime_guard.assert_business_running()
+        except RuntimeError:
+            ledger.record_outcome(conn, call_ref, status="failed")
+            raise
         with open(audio_path, "rb") as audio_file:
             with _http_client(transport, timeout, trust_env) as client:
                 try:

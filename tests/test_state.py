@@ -3,12 +3,15 @@
 模拟场景：
 - Episode 创建/查询、guid+feed 唯一约束、同 guid 不同 feed 可共存
 - 状态推进与非法状态被 CHECK 约束拒绝
+- SQLite旧v3账本迁移时已存在的付费记录默认视为claimed，禁止恢复重发
+- ledger CLI authorize 的 deferred intent 在 claim 前不标已发起，claim单次转换；主 Agent authorize直接标已发起
 - 音频固化（sha256 + 时长写入）
 - 产物清单生命周期与删除 Episode 后的外键级联
-- 账本 intent→outcome 两段式、call_ref 重复拒绝、unknown 对账态、非法 outcome 拒绝
-- reconcile_success 核销：仅 unknown→success，intent/failed/success/不存在均拒绝
+- 账本 intent→outcome 两段式、call_ref 重复拒绝、unknown 对账态、非法 outcome/金额拒绝
+- reconcile_success 核销：仅 unknown→success，intent/failed/success/不存在均拒绝；外部请求claim仅一次
 """
 import sqlite3
+from decimal import Decimal
 
 import pytest
 
@@ -115,6 +118,78 @@ def test_ledger_intent_outcome_flow(conn):
     assert row["amount_est"] == 0.18
 
 
+@pytest.mark.parametrize("amount", [-0.01, float("nan"), float("inf"), -float("inf"), True, Decimal("1e10000"), Decimal("1e-10000")])
+def test_ledger_rejects_invalid_amount_before_write(conn, amount):
+    with pytest.raises(ValueError, match="有限的非负金额"):
+        ledger.record_intent(
+            conn, episode_id=None, purpose="classify", provider="deepseek",
+            model="mock", usage_basis="phase=intent", amount_est=amount,
+            call_ref=f"invalid:{amount}",
+        )
+    assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 0
+
+
+def test_v3_migration_marks_existing_ledger_calls_as_started(tmp_path):
+    from state.migrations import migrate
+
+    conn = sqlite3.connect(tmp_path / "v3.db")
+    conn.execute("CREATE TABLE ledger (id INTEGER PRIMARY KEY, call_ref TEXT, status TEXT, amount_est REAL)")
+    conn.execute("INSERT INTO ledger (call_ref,status,amount_est) VALUES ('old-call','intent',0.2)")
+    conn.execute("PRAGMA user_version=3")
+    conn.commit()
+    migrate(conn)
+    row = conn.execute("SELECT request_started FROM ledger WHERE call_ref='old-call'").fetchone()
+    assert row[0] == 1
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    conn.close()
+
+
+def test_ledger_cli_authorize_and_deferred_claim(tmp_path, monkeypatch, capsys):
+    from state.ledger_cli import main
+
+    path = str(tmp_path / "cli-ledger.db")
+    setup = db.connect(path); db.init_schema(setup)
+    episode_id = episode.create(setup, guid="cli-episode", feed="test")
+    setup.close()
+    monkeypatch.setattr("pipeline.cost_guard.load_limits", lambda _episode_id: [])
+    common = ["--episode-id", str(episode_id), "--purpose", "translate", "--provider", "deepseek",
+              "--model", "model-x", "--usage-basis", "estimate=max", "--amount-est", "0.2",
+              "--db", path]
+    assert main(["authorize", *common, "--call-ref", "child-call", "--defer-start"]) == 0
+    capsys.readouterr()
+    conn = db.connect(path); db.init_schema(conn)
+    assert conn.execute("SELECT request_started FROM ledger WHERE call_ref='child-call'").fetchone()[0] == 0
+    conn.close()
+    assert main(["claim", "--call-ref", "child-call", "--db", path]) == 0
+    capsys.readouterr()
+    conn = db.connect(path)
+    assert conn.execute("SELECT request_started FROM ledger WHERE call_ref='child-call'").fetchone()[0] == 1
+    conn.close()
+    assert main(["authorize", *common, "--call-ref", "root-call"]) == 0
+    capsys.readouterr()
+    conn = db.connect(path)
+    assert conn.execute("SELECT request_started FROM ledger WHERE call_ref='root-call'").fetchone()[0] == 1
+    conn.close()
+
+
+def test_ledger_claim_request_is_single_use_and_requires_estimate(conn):
+    ledger.record_intent(conn, episode_id=None, purpose="translate", provider="deepseek",
+                         model="model-x", usage_basis="reserved", amount_est=0.25,
+                         call_ref="claim:once", request_started=False)
+    ledger.claim_request(conn, "claim:once")
+    row = ledger.get_by_ref(conn, "claim:once")
+    assert row["request_started"] == 1
+    with pytest.raises(ValueError, match="claim 不可用"):
+        ledger.claim_request(conn, "claim:once")
+
+    ledger.record_intent(conn, episode_id=None, purpose="translate", provider="deepseek",
+                         model="model-x", usage_basis="unpriced", amount_est=None,
+                         call_ref="claim:unpriced", request_started=False)
+    with pytest.raises(ValueError, match="claim 不可用"):
+        ledger.claim_request(conn, "claim:unpriced")
+    assert ledger.get_by_ref(conn, "claim:unpriced")["request_started"] == 0
+
+
 def test_ledger_duplicate_call_ref_rejected(conn):
     ledger.record_intent(
         conn,
@@ -195,8 +270,11 @@ def _seed_ledger_with_status(conn, call_ref: str, status: str) -> None:
 
 def test_ledger_reconcile_success_from_unknown(conn):
     _seed_ledger_with_status(conn, "r:unknown", "unknown")
-    ledger.reconcile_success(conn, "r:unknown")
-    assert ledger.get_by_ref(conn, "r:unknown")["status"] == "success"
+    ledger.reconcile_success(conn, "r:unknown", amount_est=Decimal("0.25"), usage_basis="cost_usd=0.25")
+    row = ledger.get_by_ref(conn, "r:unknown")
+    assert row["status"] == "success"
+    assert row["amount_est"] == pytest.approx(0.25)
+    assert row["usage_basis"] == "cost_usd=0.25"
 
 
 @pytest.mark.parametrize("status", ["intent", "failed", "success"])

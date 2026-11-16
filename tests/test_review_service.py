@@ -304,6 +304,16 @@ def test_auto_approve_requires_due_time(conn, tmp_path):
     assert result["items"][0]["approval"]["method"] == "auto_timeout"
 
 
+def test_auto_approve_due_honors_allowed_episode_ids(conn, tmp_path):
+    seeded = _seed_episode(conn, tmp_path)
+    blocked = service.auto_approve_due(conn, now=DUE, allowed_episode_ids=[seeded["episode_id"] + 999])
+    assert blocked["approved"] == 0
+    # 未列入白名单的期数保持 reviewing，不被自动审批。
+    assert service.detail(conn, episode_id=seeded["episode_id"])["status"] == "reviewing"
+    allowed = service.auto_approve_due(conn, now=DUE, allowed_episode_ids=[seeded["episode_id"]])
+    assert allowed["approved"] == 1
+
+
 def test_manual_and_auto_approval_race_has_one_winner(conn, tmp_path):
     seeded = _seed_episode(conn, tmp_path)
     db_path = str(tmp_path / "review.db")

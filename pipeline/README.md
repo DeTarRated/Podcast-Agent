@@ -25,4 +25,4 @@ orchestrate 采用「确定性步骤封装 + 主代理驱动」：只封装确�
 
 产物路径约定：单期工作区 `var/episodes/{id}/`，`_context/` 存 brief/gaps/glossary/alias_log/review_notes 与 `orchestrate_state.json`（phase 与幂等控制），`_context/logs/` 存各命令完整输出。时间轴只由 `apply` 从 en_fix.srt 复制，不经模型。
 
-账本：orchestrate 不写翻译/复核/调研账本（由 Runner dispatch 在 createTask 前后经 `state/ledger_cli.py` 窄 CLI 写 intent/outcome）；apply/finalize 只读取账本 success 作闸门。call_ref 形如 `{role}:{episode_id}:v{version}`。
+账本：orchestrate 不写翻译/复核/调研账本。Runner dispatch 在 `createTask` 前用目标模型最大上下文费率经 `state/ledger_cli.py authorize` 原子预算并写入带金额的 intent；子代理模型包装器在实际请求前一次性 claim，响应后回填 usage 与实际费用。主 Agent 每次 `streamSimple/completeSimple` 也经同一费用准入与账本路径。`unknown` 保留最大预留并禁止同一 call_ref 重发；apply/finalize 只读取账本 success 作闸门。

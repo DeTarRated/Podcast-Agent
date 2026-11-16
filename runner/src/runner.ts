@@ -5,6 +5,8 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import type { Models } from "@earendil-works/pi-ai";
 
 import { installTools } from "./durable-adapter.ts";
+import { budgetModels, estimateModelMaxCost, type ModelBudgetScope } from "./model-budget.ts";
+import type { SubagentInput } from "./experiment-subagent.ts";
 import { defineSubagentTask } from "./experiment-subagent.ts";
 import type { ToolSpec } from "./tool-spec.ts";
 
@@ -19,6 +21,19 @@ export interface RunnerOpenOptions {
   tools?: readonly ToolSpec[];
   /** 运行设置（如 restartLimit 熔断阈值） */
   settings?: Partial<HarnessSettings>;
+  /** 付费模型请求的Episode费用归属；真实provider必填，fake/mock tests可省略。 */
+  budget?: ModelBudgetScope;
+}
+
+export function budgetSafeHarnessSettings(settings: Partial<HarnessSettings> = {}): Partial<HarnessSettings> {
+  return {
+    ...settings,
+    retry: { ...settings.retry, enabled: false, maxRetries: 0 },
+    stream: { ...settings.stream, maxRetries: 0, maxRetryDelayMs: 0 },
+    // Durable compaction regenerates timestamps after resume. Until its task ID is part of the paid call key,
+    // keep automatic summarization off; manual compaction remains available and uses timestamp-stable callRefs.
+    compaction: { ...settings.compaction, enabled: false, modelOverrides: {} },
+  };
 }
 
 export interface SubmitOutcome {
@@ -47,16 +62,34 @@ export class Runner {
 
   /** 打开（或重开）存储；root conversation 不存在则创建。 */
   static async open(ctx: Context, options: RunnerOpenOptions): Promise<Runner> {
+    const hasRealProvider = options.models.getProviders().some((provider) => provider.id !== "mock");
+    if (hasRealProvider && !options.budget) {
+      throw new Error("真实模型 Runner 必须配置费用预算归属");
+    }
+    const runtimeModels = options.budget ? budgetModels(options.models, options.budget) : options.models;
+    const settings: Partial<HarnessSettings> = options.budget
+      ? budgetSafeHarnessSettings(options.settings)
+      : options.settings ?? {};
     const storage = await openNodeSqliteStorage(options.dbPath);
     const registry = createRegistry();
     if (options.tools && options.tools.length > 0) {
-      installTools(registry, options.tools);
+      const estimateSubagent = options.budget ? (input: SubagentInput) => {
+        if (!input.model || !input.ledger || input.ledger.episodeId !== options.budget!.episodeId ||
+            input.ledger.dbPath !== options.budget!.dbPath || input.ledger.provider !== input.model.provider ||
+            input.ledger.model !== input.model.modelId || input.ledger.purpose !== input.role) {
+          throw new Error("子代理预算元数据与Runner费用归属不匹配");
+        }
+        const model = runtimeModels.getModel(input.model.provider, input.model.modelId);
+        if (!model) throw new Error(`子代理模型未在Runner目录中配置: ${input.model.provider}/${input.model.modelId}`);
+        return estimateModelMaxCost(model);
+      } : undefined;
+      installTools(registry, options.tools, estimateSubagent);
     }
     // 子代理任务定义注册（嵌套任务形态；由 dispatch extras 创建）
     registry.install(defineExtension({ name: "experiment-tasks", tasks: [defineSubagentTask()] }));
     const harness = await Harness.open(
       storage,
-      { models: options.models, registry, settings: options.settings },
+      { models: runtimeModels, registry, settings },
       ctx,
     );
     const root = await harness.root(ctx, { agent: { model: options.model } });

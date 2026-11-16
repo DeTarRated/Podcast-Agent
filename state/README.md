@@ -2,8 +2,8 @@
 
 逐表字段、约束、职责与代码入口见 `docs/DATA_MODEL.md`。
 
-- `schema.sql`：当前 SQLite v3 全部表与索引
-- `migrations.py`：`PRAGMA user_version` 版本迁移与旧数据保护
+- `schema.sql`：当前 SQLite v4 全部表与索引
+- `migrations.py`：`PRAGMA user_version` 版本迁移与旧数据保护；旧账本请求迁移后默认标记已claim，禁止恢复重发
 - `db.py`：WAL、外键、busy_timeout、默认库路径与迁移入口
 - `feed.py` / `discovery.py`：feed 配置、候选去重、分类结果与原子入队
 - `episode.py`：Episode 创建、查询、状态推进与音频固化

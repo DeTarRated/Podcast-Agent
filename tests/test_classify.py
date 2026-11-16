@@ -3,16 +3,19 @@
 模拟场景：
 - 新候选分类后入队／跳过，重复轮询不重复分类，历史基线不分类
 - 单候选分类失败不进入执行层，也不阻塞其他候选
-- DeepSeek JSON 输出、token 用量、账本 success 与同 call_ref 防重发
+- DeepSeek JSON 输出、token 用量、预算拒绝零HTTP、账本 success 与同 call_ref 防重发
 - 网络超时与无效 JSON 记 unknown，HTTP 失败记 failed
 """
 import json
+from datetime import date
 
 import httpx
 import pytest
 
+from discover import classify
 from discover.classify import ClassificationError, DeepSeekClassifier, ClassificationResult
 from discover import poller
+from pipeline.cost_guard import authorize_and_record_intent as REAL_COST_GUARD_AUTHORIZE
 from state import db, discovery, episode, feed as feed_state, ledger
 
 NOW = "2026-11-09T12:00:00+00:00"
@@ -27,6 +30,18 @@ RSS = """<rss version="2.0"><channel><title>Test</title>
 
 @pytest.fixture(autouse=True)
 def _fake_provider_gate(monkeypatch):
+    monkeypatch.setenv("PODCAST_CLASSIFY_PRICE_MODEL", "deepseek-flash")
+    monkeypatch.setenv("PODCAST_CLASSIFY_PRICING_SOURCE", "https://api-docs.deepseek.com/quick_start/pricing")
+    monkeypatch.setenv("PODCAST_CLASSIFY_PRICING_DATE", date.today().isoformat())
+    monkeypatch.setenv("PODCAST_CLASSIFY_MAX_INPUT_TOKENS", "20000")
+    monkeypatch.setenv("PODCAST_CLASSIFY_MAX_OUTPUT_TOKENS", "256")
+    monkeypatch.setenv("PODCAST_CLASSIFY_MAX_INPUT_USD_PER_MILLION", "0.3")
+    monkeypatch.setenv("PODCAST_CLASSIFY_MAX_OUTPUT_USD_PER_MILLION", "1.2")
+
+    def authorize(conn, **kwargs):
+        return ledger.record_intent(conn, **kwargs)
+    monkeypatch.setattr("discover.classify.cost_guard.authorize_and_record_intent", authorize)
+
     class FakeGate:
         def release(self, provider, owner):
             return True
@@ -65,6 +80,87 @@ def _candidate(conn, feed_id=1, guid="episode-1"):
     return conn.execute("SELECT * FROM discovery_candidate WHERE id=?", (candidate_id,)).fetchone()
 
 
+def test_budget_denial_prevents_classifier_http_and_intent(conn, monkeypatch):
+    from decimal import Decimal
+    from state.postgres.budget import BudgetDataError
+    real_authorize = REAL_COST_GUARD_AUTHORIZE
+
+    feed_id = _feed(conn)
+    candidate = _candidate(conn, feed_id)
+    calls = []
+    classifier = DeepSeekClassifier(api_key="test-key", transport=httpx.MockTransport(
+        lambda request: calls.append(request) or httpx.Response(200, json={})
+    ))
+    monkeypatch.setattr("discover.classify.cost_guard.authorize_and_record_intent", real_authorize)
+    monkeypatch.setattr("discover.classify.cost_guard.load_limits", lambda _episode_id: [{
+        "scope": "global", "period": "day", "max_amount": Decimal("0.000001"),
+    }])
+    with pytest.raises(BudgetDataError, match="预算超限"):
+        classifier(conn, candidate)
+    assert calls == []
+    assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("key,value", [
+    ("PODCAST_CLASSIFY_PRICE_MODEL", "wrong-model"),
+    ("PODCAST_CLASSIFY_PRICING_SOURCE", ""),
+    ("PODCAST_CLASSIFY_PRICING_DATE", "2000-01-01"),
+    ("PODCAST_CLASSIFY_MAX_INPUT_TOKENS", "1"),
+])
+def test_unreliable_estimate_config_blocks_before_gate_or_http(conn, monkeypatch, key, value):
+    _feed(conn)
+    candidate = _candidate(conn)
+    monkeypatch.setenv(key, value)
+    calls = []
+    classifier = DeepSeekClassifier(api_key="test-key", transport=httpx.MockTransport(
+        lambda request: calls.append(request) or httpx.Response(200, json={})
+    ))
+    with pytest.raises(ClassificationError):
+        classifier(conn, candidate)
+    assert calls == []
+    assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 0
+
+
+def test_business_pause_blocks_classifier_before_gate_intent_and_http(conn, monkeypatch, tmp_path):
+    _feed(conn)
+    candidate = _candidate(conn)
+    pause = tmp_path / "business.pause"
+    pause.write_text("paused")
+    monkeypatch.setenv("PODCAST_BUSINESS_PAUSE_FILE", str(pause))
+    calls = []
+    classifier = DeepSeekClassifier(api_key="test-key", transport=httpx.MockTransport(
+        lambda request: calls.append(request) or httpx.Response(200, json={})
+    ))
+    with pytest.raises(RuntimeError, match="业务暂停标记存在"):
+        classifier(conn, candidate)
+    assert calls == []
+    assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 0
+
+
+def test_business_pause_during_gate_window_prevents_intent_and_http(conn, monkeypatch, tmp_path):
+    """gate 返回后、intent 写入前出现暂停：许可释放、无 intent、无 HTTP。"""
+    _feed(conn)
+    candidate = _candidate(conn)
+    pause = tmp_path / "business.pause"
+    monkeypatch.setenv("PODCAST_BUSINESS_PAUSE_FILE", str(pause))
+    real_acquire = classify.acquire_or_raise
+
+    def pausing_acquire(provider):
+        gate, decision = real_acquire(provider)
+        pause.write_text("paused in gate window\n")
+        return gate, decision
+
+    monkeypatch.setattr(classify, "acquire_or_raise", pausing_acquire)
+    calls = []
+    classifier = DeepSeekClassifier(api_key="test-key", transport=httpx.MockTransport(
+        lambda request: calls.append(request) or httpx.Response(200, json={})
+    ))
+    with pytest.raises(RuntimeError, match="业务暂停标记存在"):
+        classifier(conn, candidate)
+    assert calls == []
+    assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 0
+
+
 def test_only_new_candidates_are_classified(conn):
     feed_id = _feed(conn)
     calls = []
@@ -87,6 +183,30 @@ def test_only_new_candidates_are_classified(conn):
     )
     assert calls == ["episode-1", "episode-2"]
     assert second["duplicates"] == 2
+
+
+def test_classify_budget_limits_calls_and_defers_rest(conn):
+    """轮内分类上限：达到上限后剩余候选保持 pending 不入队不分类。"""
+    feed_id = _feed(conn)
+    calls = []
+
+    def classifier(_conn, candidate):
+        calls.append(candidate["guid"])
+        return ClassificationResult(True, "test", f"test:{candidate['guid']}")
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=RSS.encode()))
+    result = poller.poll_feed(
+        conn, feed_id, now=NOW, transport=transport, trust_env=False,
+        classifier=classifier, classify_budget={"remaining": 1},
+    )
+    assert calls == ["episode-1"]
+    assert result["classified"] == 1
+    assert result["classify_deferred"] == 1
+    assert result["enqueued"] == 1
+    # 未分类候选保留 pending，待下一轮处理，不标失败。
+    pending = discovery.get_candidate(conn, feed_id, "episode-2")
+    assert pending["status"] == "pending"
+    assert pending["classification_relevant"] is None
 
 
 def test_baseline_does_not_call_classifier(conn):
@@ -131,15 +251,26 @@ def test_classification_failure_does_not_enqueue_or_block_other_candidate(conn):
     assert discovery.get_candidate(conn, feed_id, "episode-2")["status"] == "enqueued"
 
 
-def test_deepseek_success_usage_and_duplicate_guard(conn):
+def test_deepseek_success_usage_and_duplicate_guard(conn, monkeypatch):
     _feed(conn)
     candidate = _candidate(conn)
     requests = []
+    real_authorize = REAL_COST_GUARD_AUTHORIZE
+    monkeypatch.setattr("discover.classify.cost_guard.authorize_and_record_intent", real_authorize)
+    monkeypatch.setattr("discover.classify.cost_guard.load_limits", lambda _episode_id: [])
+    sqlite_path = conn.execute("PRAGMA database_list").fetchone()[2]
 
     def handler(request):
         requests.append(request)
+        independent = __import__("sqlite3").connect(sqlite_path)
+        try:
+            row = independent.execute("SELECT status,amount_est FROM ledger").fetchone()
+            assert row[0] == "intent" and row[1] > 0
+        finally:
+            independent.close()
         payload = json.loads(request.content)
         assert payload["response_format"] == {"type": "json_object"}
+        assert payload["max_tokens"] == 256
         assert "Chelsea title" in payload["messages"][1]["content"]
         assert "audio.mp3" not in request.content.decode()
         return httpx.Response(200, json={
@@ -154,6 +285,8 @@ def test_deepseek_success_usage_and_duplicate_guard(conn):
     assert result.relevant is True
     row = ledger.get_by_ref(conn, result.call_ref)
     assert row["status"] == "success"
+    assert row["amount_est"] > 0
+    assert "estimate=versioned_max_tokens" in row["usage_basis"]
     assert "prompt_tokens=100" in row["usage_basis"]
     with pytest.raises(ClassificationError, match="禁止自动重发"):
         classifier(conn, candidate)

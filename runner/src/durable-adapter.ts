@@ -6,6 +6,7 @@ import type { Context } from "@earendil-works/chord";
 import { resolve } from "node:path";
 
 import { runCommand } from "./bash.ts";
+import { assertBusinessRunning } from "./pause.ts";
 import type { JsonValue, ToolSpec } from "./tool-spec.ts";
 import { taskWaitTimeout, waitForTerminalTask } from "./task-wait.ts";
 import { defineSubagentTask, type SubagentInput, type SubagentResult } from "./experiment-subagent.ts";
@@ -14,7 +15,7 @@ const subagentTask = defineSubagentTask();
 const REPO_ROOT = resolve(import.meta.dirname, "../..");
 
 /** 经 Python 窄 CLI 写账本（Node 不拼 SQL）。失败抛错。 */
-async function ledgerCli(command: "intent" | "outcome" | "reconcile", args: string[]): Promise<void> {
+async function ledgerCli(command: "authorize" | "outcome" | "reconcile", args: string[]): Promise<void> {
   const r = await runCommand("uv", ["run", "python", "-m", "state.ledger_cli", command, ...args], {
     cwd: REPO_ROOT,
     timeoutMs: 30_000,
@@ -24,17 +25,18 @@ async function ledgerCli(command: "intent" | "outcome" | "reconcile", args: stri
   }
 }
 
-async function writeIntent(meta: NonNullable<SubagentInput["ledger"]> & object, callRef: string): Promise<void> {
+async function writeIntent(
+  meta: NonNullable<SubagentInput["ledger"]> & object,
+  callRef: string,
+  estimate: { amount: number; usageBasis: string },
+): Promise<void> {
   const args = [
-    "--episode-id", String(meta.episodeId),
-    "--purpose", meta.purpose,
-    "--provider", meta.provider,
-    "--model", meta.model,
-    "--call-ref", callRef,
-    "--usage-basis", "phase=intent",
+    "--episode-id", String(meta.episodeId), "--purpose", meta.purpose,
+    "--provider", meta.provider, "--model", meta.model, "--call-ref", callRef,
+    "--usage-basis", estimate.usageBasis, "--amount-est", String(estimate.amount), "--defer-start",
   ];
   if (meta.dbPath) args.push("--db", meta.dbPath);
-  await ledgerCli("intent", args);
+  await ledgerCli("authorize", args);
 }
 
 async function writeOutcome(
@@ -56,7 +58,12 @@ async function getLedgerStatus(callRef: string, dbPath?: string): Promise<string
     cwd: REPO_ROOT, timeoutMs: 30_000,
   });
   const lastLine = r.stdout.trim().split("\n").at(-1) ?? "{}";
-  return (JSON.parse(lastLine) as { status: string }).status;
+  // ledger_cli 统一 envelope：{status:"success", data:{status: ...}}
+  const payload = JSON.parse(lastLine) as { status?: string; data?: { status?: string } };
+  if (payload.status !== "success" || !payload.data?.status) {
+    throw new Error(`ledger get 未返回有效状态: ${lastLine.slice(0, 200)}`);
+  }
+  return payload.data.status;
 }
 
 async function reconcileLedger(callRef: string, usageBasis: string | undefined, dbPath?: string): Promise<void> {
@@ -77,14 +84,22 @@ const defaultLedger: DispatchLedger = {
 };
 
 /** 同一实现供真实工具与 fake API/账本契约测试使用，不另建调度状态机。 */
+export type SubagentEstimate = (input: SubagentInput) => { amount: number; usageBasis: string };
+
 export async function dispatchSubagent(
   input: SubagentInput,
   api: Pick<ToolExecutionApi, "commit" | "conversationId" | "createTask" | "waitForTask">,
   context: Context,
   ledger: DispatchLedger = defaultLedger,
+  estimateSubagent?: SubagentEstimate,
 ) {
-  // 配置在任何 intent 或 createTask 之前校验，非法配置不能触发付费。
+  // 配置在任何 intent 或 createTask 之前校验，非法配置不能触发付费；暂停标记存在时拒绝派发。
+  assertBusinessRunning();
   const waitTimeoutMs = taskWaitTimeout(process.env.PODCAST_SUBAGENT_WAIT_TIMEOUT_MS);
+  if (input.model && input.model.provider !== "mock" && !input.ledger) {
+    throw new Error("真实子代理派发必须提供费用账本归属");
+  }
+  if (input.ledger && !input.model) throw new Error("子代理账本归属缺少模型路由");
   const kind = subagentTask.definition.name;
   // 跨调用去重：扫描本 conversation 下同 kind 任务的 input.callRef，命中则复用既有任务
   //（memo 存在工具任务上、不跨调用，不能用于跨调用去重）
@@ -106,16 +121,20 @@ export async function dispatchSubagent(
   } while (cursor !== undefined && taskId === undefined);
   const reused = taskId !== undefined;
   if (taskId === undefined) {
-    // 新付费任务：intent 先于 createTask；intent 失败则不创建任务
+    // 先按目标模型最大上下文费用预算并落 intent，再创建任务；子代理实际请求时一次性claim。
+    // 扫描与 intent 之间可能出现暂停标记，写 intent 与创建任务前复查。
+    assertBusinessRunning();
     if (input.ledger) {
-      await ledger.writeIntent(input.ledger, input.callRef);
+      if (!input.model || !estimateSubagent) throw new Error("子代理缺少可核实的模型费用估算配置");
+      await ledger.writeIntent(input.ledger, input.callRef, estimateSubagent(input));
     }
     try {
+      // intent 落库与创建任务之间的 await 窗内可能出现暂停标记，创建前复查。
+      assertBusinessRunning();
       taskId = await api.createTask(subagentTask, input, { ownership: { kind: "conversation" } }, context);
-    } catch (err) {
-      // createTask 失败：付费请求未发出，记 failed
+    } catch (error) {
       if (input.ledger) await ledger.writeOutcome(input.ledger, input.callRef, "failed");
-      throw err;
+      throw error;
     }
   }
   let settled;
@@ -164,7 +183,7 @@ export async function dispatchSubagent(
   return { taskId: String(taskId), result: outcome.result as unknown as JsonValue, reused };
 }
 
-export function toDurableTools(specs: readonly ToolSpec[]): ToolRegistration[] {
+export function toDurableTools(specs: readonly ToolSpec[], estimateSubagent?: SubagentEstimate): ToolRegistration[] {
   return specs.map((spec) =>
     defineTool({
       name: spec.name,
@@ -174,7 +193,7 @@ export function toDurableTools(specs: readonly ToolSpec[]): ToolRegistration[] {
       async execute(args, api, context) {
         const extras = {
           memo: (name: string, candidate: JsonValue) => api.memo(name, candidate, context),
-          dispatch: (input: SubagentInput) => dispatchSubagent(input, api, context),
+          dispatch: (input: SubagentInput) => dispatchSubagent(input, api, context, defaultLedger, estimateSubagent),
         };
         const result = await spec.execute(args, extras);
         return {
@@ -186,6 +205,6 @@ export function toDurableTools(specs: readonly ToolSpec[]): ToolRegistration[] {
   );
 }
 
-export function installTools(registry: Registry, specs: readonly ToolSpec[]): void {
-  registry.install(defineExtension({ name: "runner-tools", tools: toDurableTools(specs) }));
+export function installTools(registry: Registry, specs: readonly ToolSpec[], estimateSubagent?: SubagentEstimate): void {
+  registry.install(defineExtension({ name: "runner-tools", tools: toDurableTools(specs, estimateSubagent) }));
 }
