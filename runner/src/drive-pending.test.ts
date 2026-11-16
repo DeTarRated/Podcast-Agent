@@ -79,7 +79,7 @@ function childDelayed(exitCode: number, delayMs: number, text = "done"): typeof 
   }) as typeof spawn;
 }
 
-function queueRunner(options: { heartbeatUpdated?: boolean; claimJobs?: number } = {}) {
+function queueRunner(options: { heartbeatUpdated?: boolean; claimJobs?: number; enqueueFailsFor?: number } = {}) {
   let claimIndex = 0;
   const completed: number[] = [];
   const failed: string[][] = [];
@@ -89,12 +89,23 @@ function queueRunner(options: { heartbeatUpdated?: boolean; claimJobs?: number }
     commands.push(_command);
     let result: any;
     if (args.includes("pipeline.episode_flow")) {
-      result = { items: [{ id: 1, guid: "g1" }, { id: 2, guid: "g2" }] };
+      result = {
+        items: [
+          { id: 1, guid: "g1", estimated_cost: "0.900000", estimate_basis: "estimate_version=v1" },
+          { id: 2, guid: "g2", estimated_cost: "0.900000", estimate_basis: "estimate_version=v1" },
+        ],
+      };
     } else {
       const actionIndex = args.indexOf("state.postgres.job_cli") + 1;
       const action = args[actionIndex];
       actions.push(action);
-      if (action === "enqueue-episode") result = { reused: false };
+      if (action === "enqueue-episode") {
+        if (options.enqueueFailsFor !== undefined &&
+            Number(args[actionIndex + 1]) === options.enqueueFailsFor) {
+          return { exitCode: 1, stdout: JSON.stringify({ status: "failed", error: "running job 的估算不可改写" }), stderr: "" };
+        }
+        result = { reused: false };
+      }
       else if (action === "claim") {
         claimIndex += 1;
         result = claimIndex <= (options.claimJobs ?? 2)
@@ -266,4 +277,23 @@ test("claim 返回后 spawn 前出现暂停标记则不启动子进程", async (
     delete process.env.PODCAST_BUSINESS_PAUSE_FILE;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("单期入队失败不中断整轮：记录后可继续处理其他期数", async () => {
+  const { runner, actions } = queueRunner({ claimJobs: 2, enqueueFailsFor: 1 });
+  const result = await runPending({
+    commandRunner: runner,
+    spawnImpl: spawnFor(true),
+    parallel: 1,
+    limit: 2,
+    heartbeatMs: 60_000,
+  }) as Record<string, unknown>;
+  const failures = result.estimate_failures as Array<{ episode_id: number; error: string }>;
+  assert.equal(result.status, "success");
+  // 失败期数被记录（同一期可能被 pending 反复列出，断言至少包含该期且错误可识别）。
+  assert.ok(failures.length >= 1);
+  assert.ok(failures.every((item) => item.episode_id === 1));
+  assert.match(failures[0].error, /enqueue_failed/);
+  // 另一期仍然被领取。
+  assert.equal(actions.filter((a) => a === "claim").length >= 1, true);
 });

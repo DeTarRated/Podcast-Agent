@@ -94,13 +94,23 @@ async function runPendingLocked(
       estimateFailures.push({ episode_id: episode.id, error: "缺少估算或估算依据" });
       continue;
     }
-    const enqueued = await commandJson(runner, jobArgs("enqueue-episode", [
-      String(episode.id), episode.guid,
-      "--estimated-cost", episode.estimated_cost,
-      "--estimate-basis", episode.estimate_basis,
-    ]));
-    // 白名单范围外的 Episode 由队列 CLI 显式跳过，不中断整个调度轮次。
-    if (enqueued?.skipped === "not_in_allowlist") continue;
+    try {
+      const enqueued = await commandJson(runner, jobArgs("enqueue-episode", [
+        String(episode.id), episode.guid,
+        "--estimated-cost", episode.estimated_cost,
+        "--estimate-basis", episode.estimate_basis,
+      ]));
+      // 白名单范围外的 Episode 由队列 CLI 显式跳过，不中断整个调度轮次。
+      if (enqueued?.skipped === "not_in_allowlist") continue;
+    } catch (error) {
+      // 单期入队失败（例如该期已有在途 running job）不得中断整轮，
+      // 记录可观测失败后继续处理其他期数。
+      estimateFailures.push({
+        episode_id: episode.id,
+        error: `enqueue_failed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      continue;
+    }
   }
 
   const runId = randomUUID();

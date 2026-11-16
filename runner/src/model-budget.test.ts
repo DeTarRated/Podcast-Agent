@@ -525,3 +525,37 @@ test("子代理claim与派发使用同一估算口径，预留足够即通过", 
     delete process.env.PODCAST_SUBAGENT_INPUT_TOKENS;
   }
 });
+
+test("子代理真实提示超出预留时在claim前失败关闭，不发请求", async () => {
+  setPriceEnv();
+  process.env.PODCAST_SUBAGENT_INPUT_TOKENS = "1000"; // 预留很小
+  const f = fixture({ preauthorized: true });
+  // 让 fake 的 get 返回很小的预留额度。
+  const smallDeps: BudgetDependencies = {
+    ...f.deps,
+    commandRunner: (async (command: string, args: string[], opts?: unknown) => {
+      const result = await f.deps.commandRunner!(command, args, opts as never);
+      if (args[4] === "get") {
+        return { ...result, stdout: `${JSON.stringify({ status: "success", data: { status: "intent", amount_est: 0.000001, request_started: 0 } })}\n` };
+      }
+      return result;
+    }) as BudgetDependencies["commandRunner"],
+  };
+  try {
+    const guarded = budgetModels(f.models, { episodeId: 17 }, smallDeps);
+    const longText = "x".repeat(50_000); // 远大于 1000 token 预留
+    const context = tagBudgetCall({ messages: [{ role: "user", content: longText, timestamp: 1 }] }, {
+      episodeId: 17, purpose: "review", provider: "deepseek", model: "mock-main",
+      callRef: "review:17:v1",
+    });
+    // 两条失败关闭路径都合法：预留低于当前上界，或实际提示超出预留。
+    await assert.rejects(
+      guarded.completeSimple(model, context as never, {}),
+      /超出预留|低于当前模型上界/,
+    );
+    assert.equal(f.calls.includes("provider:complete"), false);
+    assert.equal(f.calls.includes("ledger:claim"), false);
+  } finally {
+    delete process.env.PODCAST_SUBAGENT_INPUT_TOKENS;
+  }
+});

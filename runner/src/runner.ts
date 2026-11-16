@@ -4,6 +4,8 @@ import { createRegistry, Harness, LiveDoc, defineExtension, type Conversation, t
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Models } from "@earendil-works/pi-ai";
 
+import { statSync } from "node:fs";
+
 import { installTools } from "./durable-adapter.ts";
 import { budgetModels, estimateModelMaxCost, type ModelBudgetScope } from "./model-budget.ts";
 import type { SubagentInput } from "./experiment-subagent.ts";
@@ -81,8 +83,23 @@ export class Runner {
         }
         const model = runtimeModels.getModel(input.model.provider, input.model.modelId);
         if (!model) throw new Error(`子代理模型未在Runner目录中配置: ${input.model.provider}/${input.model.modelId}`);
-        // 子代理提示由固定上下文文件组成：按配置输入上界 + 输出上限预留，不按模型窗口最坏情形。
-        return estimateModelMaxCost(model, new Date(), undefined, "subagent");
+        // 子代理提示由固定上下文文件组成：按真实文件规模估算输入 token，
+        // 与配置下限取较大者，避免「预留恒小于实际」。
+        const files = [...(input.contextFiles ?? []), ...(input.referenceFiles ?? [])];
+        let bytes = 0;
+        for (const file of files) {
+          try {
+            bytes += statSync(file).size;
+          } catch {
+            throw new Error(`子代理上下文文件不可读，无法估算费用: ${file}`);
+          }
+        }
+        const promptTokens = bytes > 0 ? Math.ceil(bytes / 3.5) : undefined;
+        return estimateModelMaxCost(
+          model, new Date(),
+          promptTokens === undefined ? undefined : { inputTokens: promptTokens },
+          "subagent",
+        );
       } : undefined;
       installTools(registry, options.tools, estimateSubagent);
     }
