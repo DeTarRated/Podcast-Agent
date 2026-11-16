@@ -305,7 +305,7 @@ test("在途期数的估算冲突记为良性跳过，不计入失败", async ()
     if (args[4] === "enqueue-episode" && Number(args[5]) === 2) {
       return {
         exitCode: 1,
-        stdout: JSON.stringify({ status: "failed", error: "running job 的估算不可改写" }),
+        stdout: JSON.stringify({ status: "failed", error: "ENQUEUE_IN_FLIGHT: running job 的估算不可改写" }),
         stderr: "",
       };
     }

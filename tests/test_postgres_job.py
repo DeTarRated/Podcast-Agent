@@ -402,7 +402,7 @@ def test_legacy_job_without_estimate_can_be_upgraded_once(conn):
     job.claim_job(conn, worker_id="w", now=START)
     conn.commit()
     # running 中不允许改写估算（避免在途请求的预留被变更）。
-    with pytest.raises(job.JobError, match="running job 的估算不可改写"):
+    with pytest.raises(job.JobError, match="ENQUEUE_IN_FLIGHT"):
         job.enqueue_job(
             conn, kind="episode", episode_id=None,
             payload={"guid": "legacy", "estimated_cost": "1.5", "estimate_basis": "estimate_version=v2"},

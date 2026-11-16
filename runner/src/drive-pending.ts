@@ -107,7 +107,7 @@ async function runPendingLocked(
     } catch (error) {
       // 单期入队失败不得中断整轮；区分「该期仍在跑」与真实估算错误。
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("running job 的估算不可改写")) {
+      if (message.includes("ENQUEUE_IN_FLIGHT")) {
         skippedInFlight.push({ episode_id: episode.id, reason: "running" });
       } else {
         estimateFailures.push({ episode_id: episode.id, error: `enqueue_failed: ${message}` });

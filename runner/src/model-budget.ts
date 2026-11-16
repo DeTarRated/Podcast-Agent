@@ -153,7 +153,9 @@ export function estimateModelMaxCost(
 ): { amount: number; usageBasis: string } {
   const price = priceConfig(model, now, {
     inputTokens: request?.inputTokens
-      ?? (mode === "subagent" ? subagentInputBound(model) : requestInputTokens(model, undefined)),
+      ?? (mode === "subagent"
+        ? subagentInputBound(model, request?.inputTokens)
+        : requestInputTokens(model, undefined)),
     outputTokens: request?.outputTokens ?? requestOutputLimit(model),
   });
   return { amount: price.estimate, usageBasis: price.basis };

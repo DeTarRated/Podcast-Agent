@@ -113,7 +113,7 @@ def enqueue_job(
                 # 期数推进后时长已知、或按剩余额度重算：估算依据会变化。
                 # 规则：非 running 时采纳最新估算并记录差异；不改状态（不由队列自动重试付费任务）。
                 if row["status"] == "running":
-                    raise JobError("running job 的估算不可改写")
+                    raise JobError("ENQUEUE_IN_FLIGHT: running job 的估算不可改写")
                 if estimate is None:
                     raise JobError("新请求缺少估算，不得覆盖已有预留")
                 merged = {**(row["payload"] or {}), **(payload or {})}

@@ -559,3 +559,18 @@ test("子代理真实提示超出预留时在claim前失败关闭，不发请求
     delete process.env.PODCAST_SUBAGENT_INPUT_TOKENS;
   }
 });
+
+test("真实样本规模：派发预留 ≥ claim 侧上界，不触发「低于当前模型上界」", async () => {
+  setPriceEnv();
+  const bigModel = { ...model, contextWindow: 1_000_000, maxTokens: 384_000 } as unknown as Model<any>;
+  const { estimateModelMaxCost } = await import("./model-budget.ts");
+  // 本仓样本期量级：约 84 KB 上下文文件。
+  const bytes = 84 * 1024;
+  const promptTokens = Math.ceil((bytes / 3.5) * 1.3);
+  const dispatched = estimateModelMaxCost(bigModel, new Date("2026-11-15T00:00:00Z"), { inputTokens: promptTokens }, "subagent");
+  // claim 侧看到的是同一批消息的 tokenizer 估算（这里按同量级 ± 10% 模拟）。
+  const claimEstimate = Math.round(promptTokens * 0.9);
+  const claimPrice = estimateModelMaxCost(bigModel, new Date("2026-11-15T00:00:00Z"), { inputTokens: claimEstimate }, "subagent");
+  assert.ok(dispatched.amount >= claimPrice.amount, `${dispatched.amount} < ${claimPrice.amount}`);
+  assert.match(dispatched.usageBasis, /input_tokens=/);
+});
