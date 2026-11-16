@@ -159,10 +159,18 @@ function router(options: RouterOptions = {}) {
   return { runner, uvCalls };
 }
 
+// 业务循环需要显式开关；默认开启，disabled 用例自行覆盖。
+process.env.PODCAST_BUSINESS_ENABLED = "1";
+
+function enableBusiness(): void {
+  process.env.PODCAST_BUSINESS_ENABLED = "1";
+}
+
 const stageNames = (result: Record<string, unknown>) =>
   ((result.stages as Array<{ stage: string }>) ?? []).map((stage) => stage.stage);
 
 test("dry run 只打印计划，零外部命令", async () => {
+  enableBusiness();
   const { runner, uvCalls } = router();
   const result = await runBusinessCycle({
     commandRunner: runner, spawnImpl: spawnFake(), dryRun: true, feedId: 3, limit: 2, parallel: 1, runId: "dry-1",
@@ -505,4 +513,31 @@ test("在途冲突不判失败：skipped_in_flight 不进入 failures", async ()
   });
   assert.equal(result.status, "success");
   assert.deepEqual(result.failures, []);
+});
+
+test("业务开关未开启时直接返回 disabled，零外部命令", async () => {
+  delete process.env.PODCAST_BUSINESS_ENABLED;
+  try {
+    const { runner, uvCalls } = router();
+    const result = await runBusinessCycle({
+      commandRunner: runner, spawnImpl: spawnFake(), runId: "disabled-1",
+    });
+    assert.equal(result.status, "disabled");
+    assert.deepEqual(uvCalls, []);
+  } finally {
+    process.env.PODCAST_BUSINESS_ENABLED = "1";
+  }
+});
+
+test("业务开关为其它值（如 0）同样视为关闭", async () => {
+  process.env.PODCAST_BUSINESS_ENABLED = "0";
+  try {
+    const result = await runBusinessCycle({
+      commandRunner: router().runner, spawnImpl: spawnFake(), runId: "disabled-2",
+    });
+    assert.equal(result.status, "disabled");
+    assert.equal(result.enabled_flag, "0");
+  } finally {
+    process.env.PODCAST_BUSINESS_ENABLED = "1";
+  }
 });

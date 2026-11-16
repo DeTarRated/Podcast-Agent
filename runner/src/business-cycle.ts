@@ -111,6 +111,18 @@ export async function runBusinessCycle(options: CycleOptions = {}): Promise<Reco
     };
   }
 
+  // 业务开关：.env 中 PODCAST_BUSINESS_ENABLED=1 才运行；缺省/其它值一律视为关闭。
+  // 与 pause 标记的区别：开关是常规启停，pause 是故障/人工紧急停止。
+  const enabled = (process.env.PODCAST_BUSINESS_ENABLED ?? "0").trim();
+  if (enabled !== "1") {
+    return {
+      status: "disabled",
+      run_id: runId,
+      enabled_flag: enabled === "" ? "<unset>" : enabled,
+      stages: [],
+    };
+  }
+
   assertBusinessRunning();
   const lock: RunLock | null = await acquireRunLock(spawnImpl);
   if (lock === null) {
@@ -379,7 +391,8 @@ async function main(): Promise<void> {
   const parallel = readIntFlag(args, "--parallel");
   const result = await runBusinessCycle({ dryRun, feedId, limit, parallel });
   console.log(JSON.stringify(result));
-  if (result.status !== "success" && result.status !== "dry_run") process.exitCode = 1;
+  // disabled 是正常状态（cron 每轮都会走到），不产生非零退出。
+  if (!["success", "dry_run", "disabled"].includes(String(result.status))) process.exitCode = 1;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
