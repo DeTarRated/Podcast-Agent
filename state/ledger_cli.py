@@ -42,6 +42,11 @@ def main(argv=None) -> int:
     p_authorize.add_argument("--amount-est", type=Decimal, required=True)
     p_authorize.add_argument("--defer-start", action="store_true")
 
+    p_reauthorize = sub.add_parser("reauthorize")
+    p_reauthorize.add_argument("--call-ref", required=True)
+    p_reauthorize.add_argument("--usage-basis", required=True)
+    p_reauthorize.add_argument("--amount-est", type=Decimal, required=True)
+
     p_claim = sub.add_parser("claim")
     p_claim.add_argument("--call-ref", required=True)
 
@@ -61,7 +66,7 @@ def main(argv=None) -> int:
 
     p_totals = sub.add_parser("totals")
 
-    for p in (p_intent, p_authorize, p_claim, p_outcome, p_reconcile, p_get, p_totals):
+    for p in (p_intent, p_authorize, p_reauthorize, p_claim, p_outcome, p_reconcile, p_get, p_totals):
         p.add_argument("--db", default=None)
 
     args = parser.parse_args(argv)
@@ -82,6 +87,13 @@ def main(argv=None) -> int:
                 amount_est=args.amount_est,
                 call_ref=args.call_ref,
                 request_started=not args.defer_start,
+            )
+            print(json.dumps({"status": "success", "data": {"status": "intent", "call_ref": args.call_ref}}, ensure_ascii=False))
+            return 0
+        elif args.command == "reauthorize":
+            ledger.reauthorize_intent(
+                conn, args.call_ref,
+                amount_est=args.amount_est, usage_basis=args.usage_basis,
             )
             print(json.dumps({"status": "success", "data": {"status": "intent", "call_ref": args.call_ref}}, ensure_ascii=False))
             return 0

@@ -374,3 +374,24 @@ def test_pending_reports_estimate_and_exhausted_budget(tmp_path, monkeypatch, ca
     item = json.loads(capsys.readouterr().out.strip().splitlines()[-1])["items"][0]
     assert "额度已用尽" in item["estimate_error"]
     assert "estimated_cost" not in item
+
+
+def test_reauthorize_rejects_claimed_request(conn):
+    """未发出请求的 unknown/intent 可重新定价；已 claim 的请求一律拒绝。"""
+    from state import ledger
+
+    episode_id = episode.create(conn, guid="reauthorize-1", feed="f")
+    ledger.record_intent(
+        conn, episode_id=episode_id, purpose="review", provider="p", model="m",
+        usage_basis="b", amount_est=0.1, call_ref="review:reauthorize:v1",
+        request_started=False,
+    )
+    ledger.record_outcome(conn, "review:reauthorize:v1", status="unknown")
+    ledger.reauthorize_intent(conn, "review:reauthorize:v1", amount_est=0.2, usage_basis="b2")
+    row = ledger.get_by_ref(conn, "review:reauthorize:v1")
+    assert row["status"] == "intent" and row["request_started"] == 0
+    assert row["amount_est"] == pytest.approx(0.2)
+
+    ledger.claim_request(conn, "review:reauthorize:v1")
+    with pytest.raises(ValueError, match="不可用"):
+        ledger.reauthorize_intent(conn, "review:reauthorize:v1", amount_est=0.3, usage_basis="b3")

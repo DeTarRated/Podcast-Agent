@@ -57,6 +57,28 @@ def record_intent(
     return int(cur.lastrowid)
 
 
+def reauthorize_intent(
+    conn: sqlite3.Connection, call_ref: str, *, amount_est, usage_basis: str
+) -> None:
+    """未发出请求的 intent/unknown 可重新定价复用；已 claim 的请求一律拒绝。"""
+    amount = _validated_amount(amount_est)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        cur = conn.execute(
+            "UPDATE ledger SET amount_est=?, usage_basis=?, status='intent', request_started=0 "
+            "WHERE call_ref=? AND request_started=0 AND status IN ('intent','unknown')",
+            (amount, usage_basis, call_ref),
+        )
+        if cur.rowcount != 1:
+            row = get_by_ref(conn, call_ref)
+            state = None if row is None else (row["status"], row["request_started"])
+            raise ValueError(f"reauthorize 不可用（请求可能已发出）: {state!r}")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def claim_request(conn: sqlite3.Connection, call_ref: str) -> None:
     """仅一次将已预算 intent claim 为即将发出外部请求，恢复时拒绝二次 claim。"""
     conn.execute("BEGIN IMMEDIATE")

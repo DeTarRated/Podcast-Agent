@@ -15,7 +15,10 @@ const subagentTask = defineSubagentTask();
 const REPO_ROOT = resolve(import.meta.dirname, "../..");
 
 /** 经 Python 窄 CLI 写账本（Node 不拼 SQL）。失败抛错。 */
-async function ledgerCli(command: "authorize" | "outcome" | "reconcile", args: string[]): Promise<void> {
+async function ledgerCli(
+  command: "authorize" | "reauthorize" | "outcome" | "reconcile",
+  args: string[],
+): Promise<void> {
   const r = await runCommand("uv", ["run", "python", "-m", "state.ledger_cli", command, ...args], {
     cwd: REPO_ROOT,
     timeoutMs: 30_000,
@@ -30,13 +33,25 @@ async function writeIntent(
   callRef: string,
   estimate: { amount: number; usageBasis: string },
 ): Promise<void> {
-  const args = [
-    "--episode-id", String(meta.episodeId), "--purpose", meta.purpose,
-    "--provider", meta.provider, "--model", meta.model, "--call-ref", callRef,
-    "--usage-basis", estimate.usageBasis, "--amount-est", String(estimate.amount), "--defer-start",
+  const base = [
+    "--call-ref", callRef,
+    "--usage-basis", estimate.usageBasis, "--amount-est", String(estimate.amount),
   ];
-  if (meta.dbPath) args.push("--db", meta.dbPath);
-  await ledgerCli("authorize", args);
+  const dbArgs = meta.dbPath ? ["--db", meta.dbPath] : [];
+  try {
+    await ledgerCli("authorize", [
+      "--episode-id", String(meta.episodeId), "--purpose", meta.purpose,
+      "--provider", meta.provider, "--model", meta.model, "--call-ref", callRef,
+      "--usage-basis", estimate.usageBasis, "--amount-est", String(estimate.amount), "--defer-start",
+      ...dbArgs,
+    ]);
+  } catch (error) {
+    // 已有 intent 且从未发出请求（request_started=0）时允许重新定价复用；
+    // 一旦请求已发出，reauthorize 会拒绝，调用方失败关闭。
+    const status = await getLedgerStatus(callRef, meta.dbPath);
+    if (status !== "intent" && status !== "unknown" && status !== "missing") throw error;
+    await ledgerCli("reauthorize", [...base, ...dbArgs]);
+  }
 }
 
 async function writeOutcome(
