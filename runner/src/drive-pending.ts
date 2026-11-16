@@ -78,12 +78,27 @@ async function runPendingLocked(
   beforeClaim?: () => Promise<boolean>,
 ): Promise<Record<string, unknown>> {
   assertBusinessRunning();
+  const estimateFailures: Array<{ episode_id: number; error: string }> = [];
   const pending = await commandJson(runner, [
     "uv", "run", "python", "-m", "pipeline.episode_flow", "pending", "--limit", String(limit),
   ]);
   for (const episode of pending.items ?? []) {
     assertBusinessRunning();
-    const enqueued = await commandJson(runner, jobArgs("enqueue-episode", [String(episode.id), episode.guid]));
+    // 金额限制下入队必须带可审计估算；缺估算的 Episode 直接跳过，
+    // 不创建无估算 job（否则之后会因幂等冲突无法用正确估算重入队）。
+    if (episode.estimate_error) {
+      estimateFailures.push({ episode_id: episode.id, error: String(episode.estimate_error) });
+      continue;
+    }
+    if (typeof episode.estimated_cost !== "string" || typeof episode.estimate_basis !== "string") {
+      estimateFailures.push({ episode_id: episode.id, error: "缺少估算或估算依据" });
+      continue;
+    }
+    const enqueued = await commandJson(runner, jobArgs("enqueue-episode", [
+      String(episode.id), episode.guid,
+      "--estimated-cost", episode.estimated_cost,
+      "--estimate-basis", episode.estimate_basis,
+    ]));
     // 白名单范围外的 Episode 由队列 CLI 显式跳过，不中断整个调度轮次。
     if (enqueued?.skipped === "not_in_allowlist") continue;
   }
@@ -207,6 +222,7 @@ async function runPendingLocked(
     failed: results.filter((item) => item.status === "failed").length,
     lease_lost: leaseLost,
     pause_write_failed: pauseWriteFailed,
+    estimate_failures: estimateFailures,
     items: results,
     job_ids: results.map((item) => item.job_id),
   };

@@ -1,7 +1,7 @@
 """真实 PostgreSQL 任务队列集成测试；仅使用本地 podcast_agent_test 数据库。
 
 模拟场景：
-- 幂等入队与 JSONB payload；经济参数冲突拒绝
+- 幂等入队与 JSONB payload；经济参数（估算/依据/预算）冲突拒绝
 - 多 worker 领取互斥、完成与错误 worker 拒绝；claim 事务边界避免 advisory lock 泄漏
 - 租约续约、过期接管、旧 worker 不得提交
 - 可重试失败指数退避、非重试与 unknown 不自动重试
@@ -71,7 +71,7 @@ def test_idempotent_enqueue_rejects_changed_estimate_or_budget(conn):
         idempotency_key="same-economic-job", budget="1.00",
     )
     assert first["reused"] is False
-    with pytest.raises(job.JobError, match="estimated_cost/budget"):
+    with pytest.raises(job.JobError, match="estimated_cost/estimate_basis/budget"):
         job.enqueue_job(
             conn, kind="transcribe", episode_id=None,
             payload={"estimated_cost": "0.50", "estimate_version": "v2"},
@@ -369,3 +369,31 @@ def test_expired_exhausted_job_is_parked_not_reclaimed(conn):
     current = job.get_job(conn, queued["id"])
     assert current["status"] == "parked"
     assert current["last_error"] == "lease_exhausted"
+
+
+def test_legacy_job_without_estimate_can_be_upgraded_once(conn):
+    """旧版无估算 job：未领取时可一次性重写估算；已领取或 running 不得改写。"""
+    legacy = job.enqueue_job(
+        conn, kind="episode", episode_id=None,
+        payload={"guid": "legacy"}, idempotency_key="legacy-1", available_at=START,
+    )["job"]
+    upgraded = job.enqueue_job(
+        conn, kind="episode", episode_id=None,
+        payload={"guid": "legacy", "estimated_cost": "0.916", "estimate_basis": "estimate_version=v1"},
+        idempotency_key="legacy-1", available_at=START,
+    )
+    assert upgraded["reused"] is True
+    assert upgraded.get("upgraded_estimate") is True
+    assert upgraded["job"]["payload"]["estimated_cost"] == "0.916"
+    assert upgraded["job"]["status"] == "ready"
+
+    # 已领取（attempts>0）后不允许再改估算。
+    job.claim_job(conn, worker_id="w", now=START)
+    conn.commit()
+    with pytest.raises(job.JobError, match="estimate_basis/budget"):
+        job.enqueue_job(
+            conn, kind="episode", episode_id=None,
+            payload={"guid": "legacy", "estimated_cost": "1.5", "estimate_basis": "estimate_version=v2"},
+            idempotency_key="legacy-1", available_at=START,
+        )
+    assert job.get_job(conn, legacy["id"])["payload"]["estimated_cost"] == "0.916"

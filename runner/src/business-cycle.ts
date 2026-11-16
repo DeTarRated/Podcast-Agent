@@ -281,14 +281,18 @@ export async function runBusinessCycle(options: CycleOptions = {}): Promise<Reco
         fail("drive-pending", `调度器状态异常: ${String(pending.status)}`);
       } else {
         if (!Array.isArray(pending.job_ids)) throw new Error("drive-pending 输出缺字段或类型非法: job_ids");
+        if (!Array.isArray(pending.estimate_failures)) throw new Error("drive-pending 输出缺字段或类型非法: estimate_failures");
         const summary = {
           claimed: needNumber(pending, "claimed", "drive-pending"),
           completed: needNumber(pending, "completed", "drive-pending"),
           failed: needNumber(pending, "failed", "drive-pending"),
           lease_lost: needBoolean(pending, "lease_lost", "drive-pending"),
           job_ids: pending.job_ids as number[],
+          estimate_failures: (pending.estimate_failures as Array<Record<string, unknown>>).length,
         };
-        if (summary.failed > 0 || summary.lease_lost) {
+        if (summary.estimate_failures > 0) {
+          fail("drive-pending", `estimate_failed=${summary.estimate_failures}`, summary);
+        } else if (summary.failed > 0 || summary.lease_lost) {
           fail("drive-pending", `worker_failed=${summary.failed} lease_lost=${summary.lease_lost}`, summary);
         } else {
           ok("drive-pending", summary);

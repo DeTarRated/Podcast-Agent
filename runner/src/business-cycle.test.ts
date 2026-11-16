@@ -107,7 +107,11 @@ function router(options: RouterOptions = {}) {
         else data = { released: true };
         break;
       case "pipeline.episode_flow":
-        if (action === "pending") data = { items: options.episodes ?? [] };
+        if (action === "pending") data = {
+          items: (options.episodes ?? []).map((item) => ({
+            ...item, estimated_cost: "0.900000", estimate_basis: "estimate_version=v1;max_duration_secs=5400",
+          })),
+        };
         else if (action === "acquire") data = { acquired: true };
         else data = { released: true };
         break;
@@ -460,4 +464,30 @@ test("dry run 计划仍展示单轮额度上限", async () => {
   const plan = result.plan as Array<Record<string, unknown>>;
   assert.equal(typeof plan[0].max_calls, "number");
   assert.equal(typeof plan[0].max_usd, "number");
+});
+
+test("估算失败的 Episode 不入队，并计入 drive-pending 失败", async () => {
+  const base = router({ episodes: [{ id: 7, guid: "g7" }] });
+  const noEstimate: typeof base.runner = async (command, args, opts) => {
+    if (args[3] === "pipeline.episode_flow" && args[4] === "pending") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ status: "success", data: {
+          items: [{ id: 7, guid: "g7", estimate_error: "缺少估算配置: PODCAST_ESTIMATE_VERSION" }],
+        } }),
+        stderr: "",
+      };
+    }
+    return base.runner(command, args, opts);
+  };
+  const result = await runBusinessCycle({
+    commandRunner: noEstimate, spawnImpl: spawnFake(), limit: 2, parallel: 1, runId: "est-1",
+  });
+  assert.equal(result.status, "failed");
+  assert.deepEqual(result.failures, ["drive-pending"]);
+  const stages = result.stages as Array<{ stage: string; summary?: Record<string, unknown> }>;
+  const pendingStage = stages.find((stage) => stage.stage === "drive-pending");
+  assert.equal(pendingStage?.summary?.estimate_failures, 1);
+  // 无估算时不得创建 job（否则幂等冲突会把 Episode 卡死）。
+  assert.equal(base.uvCalls.some((args) => args[4] === "enqueue-episode"), false);
 });

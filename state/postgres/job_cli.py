@@ -20,6 +20,7 @@ def main(argv=None) -> int:
     enqueue.add_argument("episode_id", type=int)
     enqueue.add_argument("guid")
     enqueue.add_argument("--estimated-cost")
+    enqueue.add_argument("--estimate-basis")
     enqueue.add_argument("--budget")
     claim = sub.add_parser("claim")
     claim.add_argument("--worker-id", required=True)
@@ -100,6 +101,9 @@ def main(argv=None) -> int:
             payload = {"episode_id": args.episode_id, "guid": args.guid}
             if args.estimated_cost is not None:
                 payload["estimated_cost"] = args.estimated_cost
+            if args.estimate_basis is not None:
+                # 估算口径必须随 job 持久化：金额限制下缺估算的任务一律拒绝领取。
+                payload["estimate_basis"] = args.estimate_basis
             result = job.enqueue_job(
                 conn,
                 kind="episode",

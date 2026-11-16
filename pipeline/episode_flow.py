@@ -13,7 +13,7 @@ from typing import Optional
 import httpx
 
 from pipeline import download
-from state import db, episode, execution, manifest
+from state import db, episode, estimate, execution, manifest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -151,9 +151,21 @@ def main(argv=None) -> int:
         elif args.command == "status":
             result = episode_status(conn, args.episode_id)
         elif args.command == "pending":
+            items = []
+            for row in execution.pending_episodes(conn, limit=args.limit):
+                item = dict(row)
+                # 预留用估算随候选一起给出，入队方不得自行编造金额。
+                try:
+                    amount, basis = estimate.episode_estimate(item.get("duration_secs"))
+                except estimate.EstimateError as exc:
+                    item["estimate_error"] = str(exc)
+                else:
+                    item["estimated_cost"] = str(amount)
+                    item["estimate_basis"] = basis
+                items.append(item)
             result = {
                 "status": "success",
-                "items": [dict(row) for row in execution.pending_episodes(conn, limit=args.limit)],
+                "items": items,
             }
         elif args.command == "acquire":
             result = {"status": "success", **execution.acquire(

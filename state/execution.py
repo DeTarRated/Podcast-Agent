@@ -105,7 +105,7 @@ def pending_episodes(conn: sqlite3.Connection, *, limit: int = 10) -> list[sqlit
         raise ValueError("limit 必须在 1..100")
     return conn.execute(
         """
-        SELECT id, guid, feed, title, published_at, enclosure
+        SELECT id, guid, feed, title, published_at, enclosure, duration_secs
         FROM episode WHERE status = 'discovered'
         ORDER BY published_at IS NULL, published_at ASC, id ASC LIMIT ?
         """,

@@ -51,6 +51,7 @@ def enqueue_job(
     if budget is not None:
         budget = _amount(budget, "job budget")
     estimate = _estimated({"payload": payload})
+    basis = (payload or {}).get("estimate_basis")
     available = _now(available_at)
     with conn.transaction():
         row = conn.execute(
@@ -73,13 +74,39 @@ def enqueue_job(
                 "SELECT * FROM job WHERE idempotency_key = %s", (idempotency_key,)
             ).fetchone()
             existing_estimate = _estimated(row)
+            existing_basis = (row["payload"] or {}).get("estimate_basis")
+            legacy_without_estimate = (
+                existing_estimate is None
+                and existing_basis is None
+                and estimate is not None
+                and row["status"] in ("ready", "failed", "retry")
+                and row["attempts"] == 0
+            )
+            if legacy_without_estimate:
+                # 旧版无估算 job 且从未被领取：允许以正确估算一次性重写，避免 Episode 被永久卡死。
+                # 任何已领取（attempts>0）或 running 行不允许改写，仍失败关闭。
+                merged_payload = {**(row["payload"] or {}), **(payload or {})}
+                row = conn.execute(
+                    """
+                    UPDATE job SET payload = %s, available_at = %s, status = 'ready',
+                        locked_by = NULL, locked_until = NULL, last_error = NULL, updated_at = %s
+                    WHERE id = %s RETURNING *
+                    """,
+                    (
+                        Jsonb(merged_payload, dumps=_json_dumps), available,
+                        _now(None), row["id"],
+                    ),
+                ).fetchone()
+                # 处于 transaction() 上下文内，提交由上下文负责，此处不得显式 commit。
+                return {"job": row, "reused": True, "upgraded_estimate": True}
             if (
                 row["kind"] != kind
                 or row["episode_id"] != episode_id
                 or row["budget"] != budget
                 or existing_estimate != estimate
+                or existing_basis != basis
             ):
-                raise JobError("幂等 job 的 kind/episode/estimated_cost/budget 与新请求不一致")
+                raise JobError("幂等 job 的 kind/episode/estimated_cost/estimate_basis/budget 与新请求不一致")
     conn.commit()
     return {"job": row, "reused": reused}
 
