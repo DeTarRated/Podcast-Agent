@@ -386,6 +386,26 @@ def _ledger_success_for(conn, call_ref: str, purpose: str, episode_id: int) -> N
         raise OrchestrateError(f"账本 episode/purpose 不匹配: {call_ref}")
 
 
+def _review_call_ref(conn, episode_id: int) -> str:
+    """复核 callRef：默认续用 v1（重复即去重）。
+
+    真实复核一旦成功，后续必须复用同一 ref；只有在显式授权
+    PODCAST_REVIEW_RETRY_AFTER_UNKNOWN=1 时，才对未成功的旧 ref 换代，
+    用于「结果未知或输出被截断」后的人工确认重跑。每次换代都是新账本行。
+    """
+    base = f"review:{episode_id}"
+    retry = os.environ.get("PODCAST_REVIEW_RETRY_AFTER_UNKNOWN") == "1"
+    version = 1
+    while True:
+        ref = f"{base}:v{version}"
+        row = ledger.get_by_ref(conn, ref)
+        if row is None:
+            return ref
+        if not retry or row["status"] == "success":
+            return ref
+        version += 1
+
+
 def cmd_apply(conn, episode_id: int, ws: Path) -> dict:
     ep = _get_episode(conn, episode_id)
     state = _load_state(ws)
@@ -417,7 +437,7 @@ def cmd_apply(conn, episode_id: int, ws: Path) -> dict:
     _register(conn, episode_id, "translate", "srt", ws / "en_zh.srt")
 
     episode.update_status(conn, episode_id, "translated")
-    review_ref = f"review:{episode_id}:v1"
+    review_ref = _review_call_ref(conn, episode_id)
     state["phase"] = "translated"
     state["call_refs"] = {**state.get("call_refs", {}), "review": review_ref}
     _save_state(ws, state)

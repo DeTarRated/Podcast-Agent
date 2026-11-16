@@ -251,3 +251,34 @@ def test_finalize_requires_review_notes(conn, ws, monkeypatch):
     seed_ledger_success(conn, ep_id, "review", "review")
     with pytest.raises(orchestrate.OrchestrateError, match="review_notes"):
         orchestrate.cmd_finalize(conn, ep_id, ws)
+
+
+def test_review_call_ref_versions_only_with_explicit_retry(conn, monkeypatch):
+    """复核 callRef：缺失即 v1；成功固定复用；未成功时仅显式授权才换代。"""
+    from pipeline import orchestrate
+
+    episode_id = episode.create(conn, guid="review-version", feed="f")
+    v1 = f"review:{episode_id}:v1"
+    assert orchestrate._review_call_ref(conn, episode_id) == v1
+
+    # v1 已成功 → 固定复用 v1（去重，不重复付费）
+    ledger.record_intent(
+        conn, episode_id=episode_id, purpose="review", provider="p", model="m",
+        usage_basis="b", amount_est=0.1, call_ref=v1, request_started=True,
+    )
+    ledger.record_outcome(conn, v1, status="success", amount_est=0.1)
+    monkeypatch.setenv("PODCAST_REVIEW_RETRY_AFTER_UNKNOWN", "1")
+    assert orchestrate._review_call_ref(conn, episode_id) == v1
+
+    # 另一期：v1 未知 → 未授权时仍 v1（失败关闭）；授权后换代 v2
+    other = episode.create(conn, guid="review-version-2", feed="f")
+    ov1 = f"review:{other}:v1"
+    ledger.record_intent(
+        conn, episode_id=other, purpose="review", provider="p", model="m",
+        usage_basis="b", amount_est=0.2, call_ref=ov1, request_started=True,
+    )
+    ledger.record_outcome(conn, ov1, status="unknown")
+    monkeypatch.delenv("PODCAST_REVIEW_RETRY_AFTER_UNKNOWN", raising=False)
+    assert orchestrate._review_call_ref(conn, other) == ov1
+    monkeypatch.setenv("PODCAST_REVIEW_RETRY_AFTER_UNKNOWN", "1")
+    assert orchestrate._review_call_ref(conn, other) == f"review:{other}:v2"
