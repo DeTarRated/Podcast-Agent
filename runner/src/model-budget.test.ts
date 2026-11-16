@@ -85,10 +85,13 @@ function fixture(options: { authorizeFails?: boolean; providerFails?: boolean; p
   };
   const models = {
     getProviders: () => [{ id: "mock" }],
-    completeSimple: async (_model: unknown, _context: unknown, optionsArg: unknown) => {
+    completeSimple: async (requestModel: unknown, _context: unknown, optionsArg: unknown) => {
       calls.push("provider:complete");
-      assert.equal((optionsArg as { maxRetries: number }).maxRetries, 0);
-      assert.equal((optionsArg as { maxTokens: number }).maxTokens, model.maxTokens);
+      const requested = optionsArg as { maxRetries: number; maxTokens: number };
+      assert.equal(requested.maxRetries, 0);
+      // 输出上限必须是显式值且不超过模型上限。
+      assert.ok(Number.isSafeInteger(requested.maxTokens) && requested.maxTokens > 0);
+      assert.ok(requested.maxTokens <= (requestModel as Model<any>).maxTokens);
       if (options.providerFails) throw new Error("simulated network failure");
       return makeMessage();
     },
@@ -456,4 +459,36 @@ test("子代理标记使用稳定callRef与角色账目", async () => {
   assert.equal(f.status(), "success");
   await assert.rejects(guarded.completeSimple(model, context, {}), /子代理预算intent缺失/);
   assert.equal(f.calls.filter((call) => call === "provider:complete").length, 1);
+});
+
+test("预留按实际上下文与显式输出上限计算，不按模型窗口最坏情形", async () => {
+  setPriceEnv();
+  // 真实 deepseek-v4-pro 规模：1M 上下文、384K 输出。
+  const bigModel = {
+    ...model, id: "mock-main", contextWindow: 1_000_000, maxTokens: 384_000,
+  } as unknown as Model<any>;
+  const f = fixture();
+  const guarded = budgetModels(f.models, { episodeId: 17 }, f.deps);
+  // 极短上下文 + 默认输出上限：预留必须远小于 contextWindow×费率 的最坏值。
+  await guarded.completeSimple(bigModel, { messages: [{ role: "user", content: "hi", timestamp: 1 }] } as never, {});
+  const reserved = f.reservations[0];
+  const worstCase = (bigModel.contextWindow * 0.4 + bigModel.maxTokens * 0.6) / 1_000_000;
+  assert.ok(reserved < worstCase, `reserved=${reserved} worst=${worstCase}`);
+  assert.ok(reserved > 0);
+  // 依据必须标注实际输入/输出规模，便于审计。
+  assert.match(f.settlements.at(-1)?.basis ?? "", /input_tokens=\d+;output_tokens=\d+/);
+});
+
+test("默认输出上限来自配置，且不超过模型上限", async () => {
+  setPriceEnv();
+  process.env.PODCAST_MODEL_MAX_OUTPUT_TOKENS = "1000000";
+  try {
+    const f = fixture();
+    const guarded = budgetModels(f.models, { episodeId: 17 }, f.deps);
+    const bigModel = { ...model, contextWindow: 1_000_000, maxTokens: 384_000 } as unknown as Model<any>;
+    await guarded.completeSimple(bigModel, { messages: [{ role: "user", content: "hi", timestamp: 1 }] } as never, {});
+    assert.match(f.settlements.at(-1)?.basis ?? "", new RegExp(`output_tokens=${bigModel.maxTokens}`));
+  } finally {
+    delete process.env.PODCAST_MODEL_MAX_OUTPUT_TOKENS;
+  }
 });

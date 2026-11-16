@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEvent, type Models, type Model } from "@earendil-works/pi-ai";
+import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 
 import { runCommand, type RunResult } from "./bash.ts";
 import { assertBusinessRunning, businessPausePath } from "./pause.ts";
@@ -39,7 +40,43 @@ export interface BudgetDependencies {
   now?: () => Date;
 }
 
-function priceConfig(model: Model<any>, now: Date): { estimate: number; basis: string } {
+/** 单请求输出上限：默认值必须 ≤ 模型上限，避免把模型最大输出当作每次请求的预留。 */
+function requestOutputLimit(model: Model<any>, requested?: number): number {
+  const raw = process.env.PODCAST_MODEL_MAX_OUTPUT_TOKENS ?? "8192";
+  const cap = Number(raw);
+  if (!Number.isSafeInteger(cap) || cap <= 0) {
+    throw new Error("PODCAST_MODEL_MAX_OUTPUT_TOKENS 非法");
+  }
+  const limit = Math.min(requested ?? cap, cap, model.maxTokens);
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    throw new Error(`模型请求输出上限非法: ${model.provider}/${model.id}`);
+  }
+  return limit;
+}
+
+/** 上下文 token 上界估算：实际消息估算 + 安全余量，不超过上下文窗口。 */
+function requestInputTokens(model: Model<any>, context: unknown): number {
+  const safety = Number(process.env.PODCAST_MODEL_INPUT_SAFETY_TOKENS ?? "4096");
+  if (!Number.isSafeInteger(safety) || safety < 0) {
+    throw new Error("PODCAST_MODEL_INPUT_SAFETY_TOKENS 非法");
+  }
+  let estimate = model.contextWindow;
+  try {
+    const measured = estimateContextTokens(context as never).tokens;
+    if (Number.isFinite(measured) && measured >= 0) {
+      estimate = Math.min(model.contextWindow, Math.ceil(measured) + safety);
+    }
+  } catch {
+    // 无法估算时退回上下文窗口上界（保守）。
+  }
+  return Math.max(1, estimate);
+}
+
+function priceConfig(
+  model: Model<any>,
+  now: Date,
+  request: { inputTokens: number; outputTokens: number },
+): { estimate: number; basis: string } {
   const modelKey = `${model.provider}/${model.id}`;
   if (!BUDGET_SAFE_ROUTES.has(`${model.provider}/${model.api}`)) {
     throw new Error(`模型API未完成单次请求与输出token能力验收: ${model.provider}/${model.api}`);
@@ -73,7 +110,10 @@ function priceConfig(model: Model<any>, now: Date): { estimate: number; basis: s
     inputRate = Math.max(inputRate, rates.input, rates.cacheRead, rates.cacheWrite);
     outputRate = Math.max(outputRate, rates.output);
   }
-  const raw = (model.contextWindow * inputRate + model.maxTokens * outputRate) / 1_000_000;
+  const inputTokens = Math.min(model.contextWindow, Math.max(1, Math.floor(request.inputTokens)));
+  const outputTokens = Math.min(model.maxTokens, Math.max(1, Math.floor(request.outputTokens)));
+  // 预留按本次请求的实际上下文估算 + 显式输出上限计算，而非模型窗口最坏情形。
+  const raw = (inputTokens * inputRate + outputTokens * outputRate) / 1_000_000;
   if (!Number.isFinite(raw) || raw <= 0 || !Number.isFinite(raw * 1_000_000_000_000)) {
     throw new Error(`模型最大费用估算为零或超出可表示范围: ${modelKey}`);
   }
@@ -82,22 +122,31 @@ function priceConfig(model: Model<any>, now: Date): { estimate: number; basis: s
   const safeSource = source.replaceAll("=", "%3D");
   return {
     estimate,
-    basis: `estimate=max_context_tokens;pricing_date=${pricingDate};source=${safeSource};` +
-      `context_tokens=${model.contextWindow};output_tokens=${model.maxTokens};` +
+    basis: `estimate=request_bound;pricing_date=${pricingDate};source=${safeSource};` +
+      `input_tokens=${inputTokens};output_tokens=${outputTokens};` +
+      `context_window=${model.contextWindow};model_max_output=${model.maxTokens};` +
       `max_input_usd_per_million=${inputRate};max_output_usd_per_million=${outputRate}`,
   };
 }
 
-export function estimateModelMaxCost(model: Model<any>, now: Date = new Date()): { amount: number; usageBasis: string } {
-  const price = priceConfig(model, now);
+export function estimateModelMaxCost(
+  model: Model<any>,
+  now: Date = new Date(),
+  request?: { inputTokens?: number; outputTokens?: number },
+): { amount: number; usageBasis: string } {
+  const price = priceConfig(model, now, {
+    inputTokens: request?.inputTokens ?? requestInputTokens(model, undefined),
+    outputTokens: request?.outputTokens ?? requestOutputLimit(model),
+  });
   return { amount: price.estimate, usageBasis: price.basis };
 }
 
 function singleAttemptArgs(args: unknown[], model: Model<any>): unknown[] {
   const options = (args[2] ?? {}) as { maxTokens?: number; deferred?: unknown; [key: string]: unknown };
   if (options.deferred) throw new Error("deferred模型请求尚未接入预算与对账，拒绝调用");
-  const maxTokens = options.maxTokens ?? model.maxTokens;
-  if (!Number.isSafeInteger(maxTokens) || maxTokens <= 0 || maxTokens > model.maxTokens) {
+  const maxTokens = requestOutputLimit(model, options.maxTokens);
+  if (options.maxTokens !== undefined &&
+      (!Number.isSafeInteger(options.maxTokens) || options.maxTokens <= 0 || options.maxTokens > model.maxTokens)) {
     throw new Error(`模型请求maxTokens超过已预算上限: ${model.provider}/${model.id}`);
   }
   return [args[0], args[1], { ...options, maxTokens, maxRetries: 0, maxRetryDelayMs: 0 }];
@@ -290,8 +339,11 @@ export function budgetModels(
     const model = args[0] as Model<any>;
     const context = args[1];
     const metadata = callMetadata(model, context, scope);
-    const price = priceConfig(model, now());
     const safeArgs = singleAttemptArgs(args, model);
+    const price = priceConfig(model, now(), {
+      inputTokens: requestInputTokens(model, context),
+      outputTokens: (safeArgs[2] as { maxTokens: number }).maxTokens,
+    });
     // 付费边界复查暂停：取限流许可与写账本之前失败关闭。
     assertBusinessRunning();
     const lease = await acquire(model.provider, commandRunner);
@@ -417,8 +469,11 @@ async function startStream(
   let db: string[] = [];
   try {
     metadata = callMetadata(model, context, scope);
-    price = priceConfig(model, now());
     const safeArgs = singleAttemptArgs(args, model);
+    price = priceConfig(model, now(), {
+      inputTokens: requestInputTokens(model, context),
+      outputTokens: (safeArgs[2] as { maxTokens: number }).maxTokens,
+    });
     // 付费边界复查暂停：取限流许可与写账本之前失败关闭。
     assertBusinessRunning();
     lease = await acquire(model.provider, commandRunner);
