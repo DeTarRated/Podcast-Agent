@@ -31,7 +31,7 @@
 
 - Python：发现、流水线工具、Runner 周边脚本。版本与依赖管理在最小 MVP 定稿；依赖清单与锁文件进仓库，凭据不入库。
 - Node：Fastify v5 审批 HTTP 适配、静态页与本地音频流；Python 经窄 CLI 统一执行审核与交付领域事务，Node 不直接连接 SQLite。
-- 运行时约束：VPS 单机；FastAPI 领域服务与 Fastify 审核入口由 systemd 长驻，执行层按需唤醒、空闲退出；超时审批与交付由定时扫描触发，业务 cron 尚未开启。
+- 运行时约束：VPS 单机；FastAPI 领域服务与 Fastify 审核入口由 systemd 长驻，执行层按需唤醒、空闲退出；超时审批与交付由业务 cron 定时扫描触发（`PODCAST_BUSINESS_ENABLED` 控制启停）。
 - 凭据与环境变量：Scribe API key、模型凭据、R2 密钥（最小权限）、分类 LLM 凭据，统一走环境变量或受限配置文件，日志与仓库不出现密钥。
 
 ## 库与框架候选（待选）
@@ -94,7 +94,7 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 - FastAPI 领域服务与 Fastify 审核入口由 systemd 长驻，分别监听 `127.0.0.1:8788` 与 `127.0.0.1:8787`。
 - 当前公网只开放 SSH，通过 SSH 隧道访问审核入口；HTTPS 尚未配置。
 - 执行进程按需启动：存在待处理期才运行，队列清空即退出；审核等待不占用模型会话运行。
-- 人工或 12 小时超时审批后才上传 R2；自动审批与交付 cron 尚未开启。
+- 人工或 12 小时超时审批后才上传 R2；自动审批与交付已由业务 cron 触发。
 - 私人播客库使用稳定私有节目地址；R2 私有桶 + 动态预签名 URL，过期重新签发。
 - 发布后修订期间发布指针继续指向旧版，新版上传与校验完整后才切换。
 - 知识库为独立 git 仓库，不随本仓库公开提交。
@@ -118,20 +118,29 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 
 服务器部署回归：Python 166 passed／20 skipped、Runner 28 passed、Review 14 passed；两期节目、账本、审批和当前交付已迁移并对账。2026-11-13 已完成 VPS 首轮顺序 fake／只读基准：队列 43.896 任务/秒（领取 p95 77.769ms）、管理 API 48.128 QPS（p95 408.849ms）、Redis 1512.636 次/秒（p95 34.754ms），均零错误。完整环境、参数差异与验收边界见 `docs/PERFORMANCE_REPORT.md`；这些不是生产 SLA 或真实供应商吞吐。
 
-### cron 唤醒顺序（待部署验收）
+### 业务 cron（已安装）
 
-下列命令分别执行并退出，不启动常驻 worker；本地真实全链与 VPS 服务回归已通过，但业务 cron 尚未开启，实际安装前仍需明确真实付费调用边界：
+`/etc/cron.d/podcast-agent` 每 15 分钟用 flock 防重叠调用包装脚本，进入一个业务循环即完成下列阶段（不再分别手工执行）：
 
-```bash
-# 每 15 分钟发现新节目
-uv run python -m discover.cli poll --classify
-# 有界处理 discovered 期数（持久化 execution_lock 互斥）
-node --experimental-strip-types runner/src/drive-pending.ts
-# 扫描到期的 12 小时审核窗口
-uv run python -m review.cli auto-approve-due
-# 补齐看点并发布已批准版本
-node --experimental-strip-types runner/src/drive-delivery.ts
+```text
+前置健康／暂停／预算一致性检查
+→ discover poll --classify
+→ 估算与入队 → drive-pending
+→ auto-approve-due
+→ drive-delivery
 ```
+
+```cron
+*/15 * * * * ubuntu flock -n /home/ubuntu/podcast-agent-runtime/business.cron.lock \
+  /home/ubuntu/podcast-agent-runtime/run-business-cycle.sh \
+  >> /home/ubuntu/podcast-agent-runtime/logs/business-cycle.log 2>&1
+```
+
+- 包装脚本以 700 权限读取仓库 `.env`（600），不把密钥写进 crontab
+- 日志 `~/podcast-agent-runtime/logs/business-cycle.log`，logrotate 每日轮转、保留 14 份、单文件 50M 上限
+- 启停：`.env` 的 `PODCAST_BUSINESS_ENABLED=1` 为运行；改为 `0`（或删除该行）后下一轮直接返回 `status:"disabled"`，不请求 feed、不领取任务、不产生费用，退出码仍为 0
+- 紧急停止：`touch ~/podcast-agent-runtime/business.pause`，下一轮起所有付费入口失败关闭；恢复时删除该文件
+- 单轮上限：`PODCAST_CYCLE_MAX_CALLS`／`PODCAST_CYCLE_MAX_USD`，超限即停后续阶段并判失败
 
 调度器不强杀在途子进程，避免制造未知付费结果；交付 worker 区分可重试上传失败与不自动重试的 highlights 失败。
 

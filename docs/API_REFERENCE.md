@@ -195,6 +195,8 @@ X-Domain-Token: <内部令牌>
 | 业务暂停标记 | 存在时 drive-pending 不入队不领取、子代理派发与主 Agent／子代理模型请求、Scribe、分类、审批、发布全部拒绝；入口检查之外，在账本写入后、真实供应商请求前等异步窗口边界复查，暂停时先释放当次预留；claim 返回与 spawn 之间复查；失租自动写标记（写盘失败显式报告且进程内仍停止派发）；在途 unsafe 请求自然结束。drive-pending 启动时加载仓库 `.env`，生产经其注入 `PODCAST_BUSINESS_PAUSE_FILE=/home/ubuntu/podcast-agent-runtime/business.pause` | `PODCAST_BUSINESS_PAUSE_FILE`（默认 `var/business.pause`） |
 | 共享运行锁 | drive-pending、drive-episode、dispatch-driver（含 highlights/rerun 驱动）竞争同一把 flock；持锁以子进程握手信号为准并绑定父进程生命周期；队列子进程经 `PODCAST_RUN_LOCK_TOKEN` 识别父进程持锁避免死锁 | `PODCAST_BUSINESS_LOCK_FILE`（默认 `var/business.lock`） |
 | 失租保护 | 心跳 `updated=false` 视为失租：立即写暂停标记全局停止新增派发；过期非 safe 类型任务（仅 `download` 为 safe）转 parked/unknown 防重放 | `state/postgres/job.py` `SAFE_KINDS` |
+| 业务启停开关 | `PODCAST_BUSINESS_ENABLED=1` 才执行业务循环；缺省或其它值返回 `status:"disabled"`（不请求 feed、不领取任务、不产生付费），退出码 0。与暂停标记的区别：开关是常规启停，暂停标记是故障／紧急停止 | `.env` 的 `PODCAST_BUSINESS_ENABLED` |
+| cron 入口 | `/etc/cron.d/podcast-agent` 每 15 分钟用 flock 调用 `~/podcast-agent-runtime/run-business-cycle.sh`，日志追加到 `~/podcast-agent-runtime/logs/business-cycle.log`（logrotate 每日、保留 14 份、50M 上限） | 见 `docs/TECH_STACK.md`「业务 cron」 |
 | `state.ledger_cli claim` | 已预留intent的一次性外部请求claim；恢复重放拒绝 | `state/ledger_cli.py`、`state/ledger.py` |
 
 ### PostgreSQL 队列与多用户
