@@ -430,3 +430,21 @@ def test_estimate_update_on_resume_records_previous_value(conn):
     assert row["payload"]["estimated_cost"] == "0.98"
     # 不由队列自动重试：状态保持不变。
     assert row["status"] == "ready"
+
+
+def test_estimate_update_survives_outer_open_transaction(conn):
+    """外层事务已打开时（如 migrate 之后），估算更新必须随统一提交持久化。"""
+    conn.execute("SELECT 1")  # 打开外层事务
+    base = job.enqueue_job(
+        conn, kind="episode", episode_id=None,
+        payload={"guid": "t", "estimated_cost": "1.13", "estimate_basis": "cap"},
+        idempotency_key="outer-tx-1", available_at=START,
+    )["job"]
+    updated = job.enqueue_job(
+        conn, kind="episode", episode_id=None,
+        payload={"guid": "t", "estimated_cost": "0.98", "estimate_basis": "duration_secs=2879"},
+        idempotency_key="outer-tx-1", available_at=START,
+    )
+    assert updated.get("estimate_updated") is True
+    conn.commit()
+    assert job.get_job(conn, base["id"])["payload"]["estimated_cost"] == "0.98"

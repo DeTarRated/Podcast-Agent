@@ -53,6 +53,7 @@ def enqueue_job(
     estimate = _estimated({"payload": payload})
     basis = (payload or {}).get("estimate_basis")
     available = _now(available_at)
+    early: Optional[dict] = None
     with conn.transaction():
         row = conn.execute(
             """
@@ -97,15 +98,18 @@ def enqueue_job(
                         _now(None), row["id"],
                     ),
                 ).fetchone()
-                # 处于 transaction() 上下文内，提交由上下文负责，此处不得显式 commit。
-                return {"job": row, "reused": True, "upgraded_estimate": True}
-            structurally_same = (
-                row["kind"] == kind
-                and row["episode_id"] == episode_id
-                and row["budget"] == budget
-            )
+                # 不能在此 return：外层事务若已打开（如 migrate 后），需统一提交。
+                early = {"job": row, "reused": True, "upgraded_estimate": True}
+            if early is not None:
+                structurally_same = None
+            else:
+                structurally_same = (
+                    row["kind"] == kind
+                    and row["episode_id"] == episode_id
+                    and row["budget"] == budget
+                )
             estimate_changed = existing_estimate != estimate or existing_basis != basis
-            if structurally_same and estimate_changed:
+            if structurally_same is not None and estimate_changed:
                 # 期数推进后时长已知、或按剩余额度重算：估算依据会变化。
                 # 规则：非 running 时采纳最新估算并记录差异；不改状态（不由队列自动重试付费任务）。
                 if row["status"] == "running":
@@ -120,14 +124,16 @@ def enqueue_job(
                     """,
                     (Jsonb(merged, dumps=_json_dumps), _now(None), row["id"]),
                 ).fetchone()
-                return {
+                early = {
                     "job": updated_row, "reused": True, "estimate_updated": True,
                     "previous_estimate": None if existing_estimate is None else str(existing_estimate),
                     "requested_estimate": str(estimate),
                 }
-            if not structurally_same:
+            if structurally_same is False:
                 raise JobError("幂等 job 的 kind/episode/budget 与新请求不一致")
     conn.commit()
+    if early is not None:
+        return early
     return {"job": row, "reused": reused}
 
 
