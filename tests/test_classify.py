@@ -332,3 +332,45 @@ def test_deepseek_invalid_json_and_http_failure(conn):
         failed(conn, other)
     other_ref = f"classify:1:episode-2:" + __import__('hashlib').sha256(b"Chelsea title\nChelsea summary").hexdigest()
     assert ledger.get_by_ref(conn, other_ref)["status"] == "failed"
+
+
+def test_interests_default_and_custom_topics(monkeypatch):
+    """关注对象可配置：默认 Chelsea；可追加曼联等；非法配置失败关闭。"""
+    monkeypatch.delenv("PODCAST_CLASSIFY_TOPICS", raising=False)
+    assert classify.interests() == [classify.DEFAULT_INTERESTS]
+    assert "Chelsea" in classify.system_prompt_for(classify.interests())
+
+    monkeypatch.setenv("PODCAST_CLASSIFY_TOPICS", "Chelsea 男子足球队, Manchester United 男子足球队")
+    items = classify.interests()
+    assert items == ["Chelsea 男子足球队", "Manchester United 男子足球队"]
+    prompt = classify.system_prompt_for(items)
+    assert "Manchester United" in prompt and "Chelsea" in prompt
+    # 判定范围明确限定男足一线队，避免把女足或其他运动算进来。
+    assert "男子一线队" in prompt
+
+
+@pytest.mark.parametrize("value", ["", "   ", "a,b,c,d,e,f,g,h,i", "bad\nvalue", "x" * 41])
+def test_invalid_topics_fail_closed(monkeypatch, value):
+    monkeypatch.setenv("PODCAST_CLASSIFY_TOPICS", value)
+    with pytest.raises(classify.ClassificationError):
+        classify.interests()
+
+
+def test_custom_topics_reach_classifier_request(conn, monkeypatch):
+    """配置的关注对象必须真正出现在发给供应商的提示里。"""
+    _feed(conn)
+    candidate = _candidate(conn)
+    monkeypatch.setenv("PODCAST_CLASSIFY_TOPICS", "Chelsea 男子足球队,Manchester United 男子足球队")
+    captured = []
+
+    def handler(request):
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps({"relevant": True, "reason": "MU"})}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+        })
+
+    classifier = DeepSeekClassifier(api_key="test-key", transport=httpx.MockTransport(handler))
+    classifier(conn, candidate)
+    system = captured[0]["messages"][0]["content"]
+    assert "Manchester United" in system

@@ -32,6 +32,36 @@ class ClassificationResult:
     call_ref: str
 
 
+DEFAULT_INTERESTS = "Chelsea 男子足球队"
+
+
+def interests() -> list[str]:
+    """关注的俱乐部／主题，来自 PODCAST_CLASSIFY_TOPICS（逗号分隔）。
+
+    缺失时沿用历史默认（只关心 Chelsea 男足）；配置非法一律失败关闭，
+    避免“配置写错就变成全量下载”。
+    """
+    raw = os.environ.get("PODCAST_CLASSIFY_TOPICS", DEFAULT_INTERESTS)
+    items = [item.strip() for item in raw.split(",") if item.strip()]
+    if not items or len(items) > 8:
+        raise ClassificationError("PODCAST_CLASSIFY_TOPICS 必须为 1..8 个逗号分隔条目")
+    for item in items:
+        if len(item) > 40 or any(ch in item for ch in "\n\r{}"):
+            raise ClassificationError(f"PODCAST_CLASSIFY_TOPICS 条目非法: {item!r}")
+    return items
+
+
+def system_prompt_for(items: list[str]) -> str:
+    topics = "、".join(items)
+    return (
+        f"你是播客元数据分类器。只判断是否可能涉及以下对象：{topics}。"
+        "判定范围限于男子一线队，包括球员、教练、管理层、比赛、转会、伤病和战术讨论。"
+        "与上述对象无关的其他球队、其他运动或女足内容应判 false。"
+        "无法确定但有潜在男足关联时判 true，避免漏掉。"
+        '只输出 JSON object：{"relevant":true或false,"reason":"简短原因"}。'
+    )
+
+
 def call_ref_for(feed_id: int, guid: str, title: str, summary: str) -> str:
     digest = hashlib.sha256(f"{title}\n{summary}".encode("utf-8")).hexdigest()
     return f"classify:{feed_id}:{guid}:{digest}"
@@ -114,11 +144,7 @@ class DeepSeekClassifier:
             )
         # 付费边界失败关闭：暂停标记存在时不取限流许可、不落 intent、不发请求。
         runtime_guard.assert_business_running()
-        system_prompt = (
-            "你是播客元数据分类器。只判断是否可能涉及 Chelsea 男子足球队，包括球员、教练、管理层、比赛、转会、伤病和战术讨论。"
-            "纯切尔西女足、与切尔西无关的其他球队或体育内容应判 false。无法确定但有潜在男足关联时判 true，避免漏掉。"
-            "只输出 JSON object：{\"relevant\":true或false,\"reason\":\"简短原因\"}。"
-        )
+        system_prompt = system_prompt_for(interests())
         user_content = f"标题：{title}\n简介：{summary}"
         estimate, max_output_tokens, estimate_basis = _estimate_request(
             self.model, system_prompt, title, summary,
