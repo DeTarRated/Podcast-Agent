@@ -104,3 +104,24 @@ test("握手成功后 unref 并释放 stdout，父进程不被持锁子进程拖
   assert.equal(unrefed, true);
   assert.equal(destroyed, true);
 });
+
+test(".env 解析剥离成对引号并保留内部空格", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { loadRepoEnv } = await import("./env.ts");
+  const dir = mkdtempSync(join(tmpdir(), "env-test-"));
+  const file = join(dir, ".env");
+  writeFileSync(file, 'PODCAST_TEST_QUOTED="Chelsea 男子足球队,Manchester United"\nPODCAST_TEST_PLAIN=abc\n');
+  delete process.env.PODCAST_TEST_QUOTED;
+  delete process.env.PODCAST_TEST_PLAIN;
+  try {
+    loadRepoEnv(file);
+    assert.equal(process.env.PODCAST_TEST_QUOTED, "Chelsea 男子足球队,Manchester United");
+    assert.equal(process.env.PODCAST_TEST_PLAIN, "abc");
+  } finally {
+    delete process.env.PODCAST_TEST_QUOTED;
+    delete process.env.PODCAST_TEST_PLAIN;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

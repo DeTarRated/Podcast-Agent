@@ -21,6 +21,12 @@ export function loadRepoEnv(path?: string): void {
     if (!match) {
       throw new Error(`.env 第 ${index + 1} 行格式非法（要求 KEY=VALUE）: ${line.slice(0, 50)}`);
     }
-    if (!(match[1] in process.env)) process.env[match[1]] = match[2];
+    // 与 Python 侧 .env 解析一致：成对引号包裹的值去掉引号，保留内部空格。
+    let value = match[2];
+    if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'")))) {
+      value = value.slice(1, -1);
+    }
+    if (!(match[1] in process.env)) process.env[match[1]] = value;
   });
 }
