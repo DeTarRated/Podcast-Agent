@@ -87,3 +87,20 @@ test("持锁命令包含父进程存活哨兵，父进程消失时子进程自�
   assert.ok(hold.includes(`kill -0 ${process.pid}`));
   assert.ok(hold.includes("sleep 2"));
 });
+
+test("握手成功后 unref 并释放 stdout，父进程不被持锁子进程拖住", async () => {
+  let unrefed = false;
+  let destroyed = false;
+  await acquireRunLock((() => {
+    const child = new EventEmitter() as any;
+    child.stdout = new PassThrough();
+    child.stdout.destroy = () => { destroyed = true; return child.stdout; };
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    child.unref = () => { unrefed = true; };
+    process.nextTick(() => child.stdout.write("podcast-agent-run-lock\n"));
+    return child;
+  }) as typeof spawn);
+  assert.equal(unrefed, true);
+  assert.equal(destroyed, true);
+});

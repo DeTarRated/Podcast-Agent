@@ -47,6 +47,13 @@ export async function acquireRunLock(spawnImpl: typeof spawn): Promise<RunLock |
     try { child.kill("SIGKILL"); } catch { /* 已退出 */ }
     return null;
   }
+  // 握手后必须释放管道并 unref：否则持锁子进程的 stdout 会拖住事件循环，
+  // 父进程无法退出，而子进程又在等父进程退出，形成互等死锁。
+  try {
+    child.stdout?.removeAllListeners();
+    child.stdout?.destroy();
+    child.unref();
+  } catch { /* 老版本 fake 可能未实现 unref */ }
   const release = () => {
     try { child.kill("SIGKILL"); } catch { /* 已退出 */ }
     process.removeListener("exit", release);
