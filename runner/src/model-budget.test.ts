@@ -560,17 +560,26 @@ test("子代理真实提示超出预留时在claim前失败关闭，不发请求
   }
 });
 
-test("真实样本规模：派发预留 ≥ claim 侧上界，不触发「低于当前模型上界」", async () => {
+test("真实样本规模：派发预留不低于配置下限，故 claim 不会因预留不足被拒", async () => {
   setPriceEnv();
   const bigModel = { ...model, contextWindow: 1_000_000, maxTokens: 384_000 } as unknown as Model<any>;
   const { estimateModelMaxCost } = await import("./model-budget.ts");
-  // 本仓样本期量级：约 84 KB 上下文文件。
-  const bytes = 84 * 1024;
-  const promptTokens = Math.ceil((bytes / 3.5) * 1.3);
-  const dispatched = estimateModelMaxCost(bigModel, new Date("2026-11-15T00:00:00Z"), { inputTokens: promptTokens }, "subagent");
-  // claim 侧看到的是同一批消息的 tokenizer 估算（这里按同量级 ± 10% 模拟）。
+  const now = new Date("2026-11-15T00:00:00Z");
+  // 派发侧：约 84 KB 上下文文件 → bytes/3.5*1.3 ≈ 31.4K tokens（低于 40000 下限）。
+  const promptTokens = Math.ceil((84 * 1024 / 3.5) * 1.3);
+  const dispatched = estimateModelMaxCost(bigModel, now, { inputTokens: promptTokens }, "subagent");
+  const dispatchTokens = Number(/input_tokens=(\d+)/.exec(dispatched.usageBasis)?.[1]);
+  // 子代理模式必须被下限抬到 40000，而不是停在 31.4K。
+  assert.equal(dispatchTokens, 40000);
+  // claim 侧：tokenizer 估算同样低于下限 → 也是 40000，两者相等，预留足够。
   const claimEstimate = Math.round(promptTokens * 0.9);
-  const claimPrice = estimateModelMaxCost(bigModel, new Date("2026-11-15T00:00:00Z"), { inputTokens: claimEstimate }, "subagent");
-  assert.ok(dispatched.amount >= claimPrice.amount, `${dispatched.amount} < ${claimPrice.amount}`);
-  assert.match(dispatched.usageBasis, /input_tokens=/);
+  const claim = estimateModelMaxCost(bigModel, now, { inputTokens: claimEstimate }, "subagent");
+  const claimTokens = Number(/input_tokens=(\d+)/.exec(claim.usageBasis)?.[1]);
+  assert.equal(claimTokens, 40000);
+  assert.ok(dispatched.amount >= claim.amount);
+  // 真实提示超过下限时，两侧都按实测规模抬升。
+  const hugeTokens = 120_000;
+  const bigDispatch = estimateModelMaxCost(bigModel, now, { inputTokens: hugeTokens }, "subagent");
+  assert.equal(Number(/input_tokens=(\d+)/.exec(bigDispatch.usageBasis)?.[1]), hugeTokens + 4096);
 });
+

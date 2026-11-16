@@ -151,11 +151,12 @@ export function estimateModelMaxCost(
   request?: { inputTokens?: number; outputTokens?: number },
   mode: "request" | "subagent" = "request",
 ): { amount: number; usageBasis: string } {
+  // 子代理模式必须恒取 max(配置下限, 实测估算+safety)：下限不可被 request 短路绕过。
+  const inputTokens = mode === "subagent"
+    ? subagentInputBound(model, request?.inputTokens)
+    : (request?.inputTokens ?? requestInputTokens(model, undefined));
   const price = priceConfig(model, now, {
-    inputTokens: request?.inputTokens
-      ?? (mode === "subagent"
-        ? subagentInputBound(model, request?.inputTokens)
-        : requestInputTokens(model, undefined)),
+    inputTokens,
     outputTokens: request?.outputTokens ?? requestOutputLimit(model),
   });
   return { amount: price.estimate, usageBasis: price.basis };
