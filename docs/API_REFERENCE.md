@@ -185,6 +185,17 @@ X-Domain-Token: <内部令牌>
 | `pipeline.episode_flow pending` | 当前 discovered 期数查询 | `pipeline/episode_flow.py` |
 | `pipeline.episode_flow acquire/heartbeat/release` | 兼容旧执行租约的 CLI；主队列使用 PostgreSQL job | `pipeline/episode_flow.py`、`state/execution.py` |
 | `pipeline.provider_gate acquire/release` | Redis 限流与并发租约 | `pipeline/provider_gate.py` |
+| `state.ledger_cli authorize` | 先读取PG预算配置，再在SQLite写锁内汇总账本并写入intent；`--defer-start`供预创建的子代理任务使用 | `state/ledger_cli.py`、`pipeline/cost_guard.py` |
+
+### 运行隔离与白名单
+
+| 机制 | 行为 | 配置 |
+| --- | --- | --- |
+| 业务白名单 | 文件存在时，`poll` 只轮询列出的 feed、`enqueue` 只入队列出的 guid、`claim` 只领取列出的 Episode 与 job、`auto-approve-due` 与 `publish-approved` 只处理列出的 Episode（含维护写入）；键缺省表示该维度不限制；非法配置失败关闭 | `PODCAST_ALLOWLIST_FILE`（默认 `var/allowlist.json`），JSON：`{"feeds":[],"episodes":[],"guids":["feed_url::guid"],"jobs":[]}` |
+| 业务暂停标记 | 存在时 drive-pending 不入队不领取、子代理派发与主 Agent／子代理模型请求、Scribe、分类、审批、发布全部拒绝；入口检查之外，在账本写入后、真实供应商请求前等异步窗口边界复查，暂停时先释放当次预留；claim 返回与 spawn 之间复查；失租自动写标记（写盘失败显式报告且进程内仍停止派发）；在途 unsafe 请求自然结束。drive-pending 启动时加载仓库 `.env`，生产经其注入 `PODCAST_BUSINESS_PAUSE_FILE=/home/ubuntu/podcast-agent-runtime/business.pause` | `PODCAST_BUSINESS_PAUSE_FILE`（默认 `var/business.pause`） |
+| 共享运行锁 | drive-pending、drive-episode、dispatch-driver（含 highlights/rerun 驱动）竞争同一把 flock；持锁以子进程握手信号为准并绑定父进程生命周期；队列子进程经 `PODCAST_RUN_LOCK_TOKEN` 识别父进程持锁避免死锁 | `PODCAST_BUSINESS_LOCK_FILE`（默认 `var/business.lock`） |
+| 失租保护 | 心跳 `updated=false` 视为失租：立即写暂停标记全局停止新增派发；过期非 safe 类型任务（仅 `download` 为 safe）转 parked/unknown 防重放 | `state/postgres/job.py` `SAFE_KINDS` |
+| `state.ledger_cli claim` | 已预留intent的一次性外部请求claim；恢复重放拒绝 | `state/ledger_cli.py`、`state/ledger.py` |
 
 ### PostgreSQL 队列与多用户
 

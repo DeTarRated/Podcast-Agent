@@ -1,6 +1,6 @@
 # Redis 分布式限流与并发协调实现记录
 
-- 状态：已实现并通过本地真实 Redis 测试；VPS 单实例健康检查通过，生产并发压测待做
+- 状态：已实现并通过本地真实 Redis 测试；VPS 单实例健康检查与首轮 fake 并发基准完成，故障注入与长期验收待做
 - 目标：在多 worker／多期节目并发处理时，对外部付费供应商进行速率与并发控制
 - 核心代码：`pipeline/provider_gate.py`
 - Runner 接缝：`runner/src/provider-gate.ts`
@@ -94,18 +94,20 @@ Lua 脚本原子执行：
 
 ## 与付费账本的顺序
 
-真实调用顺序为：
+Scribe／分类／Runner 主 Agent 的真实调用顺序为：
 
 ```text
 本地状态与重复检查
 → Redis acquire
-→ 付费账本 record_intent
+→ SQLite预算准入 + 付费账本 intent
 → 外部 POST／模型调用
 → record_outcome(success / failed / unknown)
 → Redis release(owner)
 ```
 
-被限流或 Redis 不可用时，不会写入新的付费 intent，也不会发外部请求。已有 call_ref 的重复任务在 acquire 前就被拒绝，不会重复占用配额。
+Runner 子代理为确保 intent 在 `createTask` 前持久化，先按模型最大token与目录最高费率做预算预留，再创建任务；子任务取得 Redis permit 后通过 SQLite 一次性claim，随后才调用模型。若子任务被限流或 Redis 不可用，不发外部请求，已有预留转为 failed；该保守预留不会自动释放，也不会因重试而重复调用。
+
+单次调用路径在 Redis acquire 失败时不会写入付费 intent，也不会发外部请求。Scribe／分类在 acquire 前检查既有 call_ref；Runner 主 Agent 由账本唯一键拒绝同一请求，子代理由持久化任务去重与一次性claim共同阻止重复供应商请求。
 
 如果账本 intent 写入失败，会释放已取得的租约。若调用完成但 release 失败，业务结果保持不变，Redis owner 等待 TTL 回收。
 
@@ -191,7 +193,7 @@ Runner 的 `provider-gate.test.ts` 另验证 provider／owner 参数映射和限
 - 当前验证为本地单 Redis 实例，不代表 Redis Cluster／Sentinel 已完成验收
 - 尚未实现动态限流配置管理页；当前通过环境变量配置
 - 长任务租约依赖 TTL，尚未做独立心跳压测；PostgreSQL 任务租约仍有自己的恢复语义
-- 未把本地测试吞吐写成生产 QPS
+- VPS 首轮有效轮次：1000 次 acquire/release、32 并发、`rate=1000/s`、`burst=1000`、`max_concurrent=64`；**1512.636 次/秒**，p95 **34.754ms**，零错误。测试走本机回环地址、使用随机前缀，结束后清理测试 key；不是供应商吞吐或生产 SLA
 - 多用户账号、会话、Episode 授权和 PostgreSQL 预算已实现；登录也复用 Redis 闸门限流
-- VPS 当前使用受密码保护且仅监听本机的单 Redis 实例，尚未做 Redis 故障注入或生产吞吐测量
+- VPS 当前使用受密码保护且仅监听本机的单 Redis 实例，尚未做 Redis 故障注入或长期吞吐测量
 - 真实供应商的限流阈值仍需按账号配额与受控调用校准

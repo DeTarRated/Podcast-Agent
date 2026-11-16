@@ -44,7 +44,7 @@
 | 框架隔离 | ToolSpec 中立契约与 Runner 薄封装，隔离实验 API | ✅ | `runner/src/tool-spec.ts`、`runner/src/durable-adapter.ts`、`docs/verification/flow-test.md` |
 | 部署运维 | VPS、cron、凭据、私有访问、备份、磁盘与操作手册 | 🟡 VPS 基础部署、systemd 长驻服务、数据迁移、SSH 隧道、本机备份与同机恢复演练已完成；监控、HTTPS、异地副本和业务 cron 待做 | `docs/TECH_STACK.md`、`docs/HANDOFF.md` |
 | 分类过滤 | 只按标题／简介判断 Chelsea 相关性，独立账本，入队前过滤 | ✅ mock 与真实分类入队通过；价格／命中率继续观察 | `discover/classify.py`、`tests/test_classify.py` |
-| 多用户与高并发 | PostgreSQL 队列、多 worker、Redis 闸门、授权、预算与本地压测 | ✅ 核心链路已实现并有本地证据；VPS 回归通过，生产压测与真实供应商校准待做 | `docs/HIGH_CONCURRENCY_REQUIREMENTS.md`、`docs/PERFORMANCE_REPORT.md`、`state/postgres/` |
+| 多用户与高并发 | PostgreSQL 队列、多 worker、Redis 闸门、授权、预算与本地压测 | ✅ 核心链路与本地指标通过；VPS 回归及首轮 fake／只读基准完成；故障矩阵、真实供应商校准和长期验收待做 | `docs/HIGH_CONCURRENCY_REQUIREMENTS.md`、`docs/PERFORMANCE_REPORT.md`、`state/postgres/` |
 
 ## 投入原则
 
@@ -58,7 +58,7 @@
 
 | 阻塞项 | 状态 | 影响 | 处理入口 |
 | --- | --- | --- | --- |
-| 生产运维收尾 | 🟡 基础部署与同机恢复已完成 | 监控、HTTPS、强认证、异地副本、生产压测与业务 cron | `docs/TECH_STACK.md`、`docs/HANDOFF.md` |
+| 生产运维收尾 | 🟡 基础部署、同机恢复与首轮 VPS 基准已完成 | 监控、HTTPS、强认证、异地副本、故障矩阵、长期验收与业务 cron | `docs/TECH_STACK.md`、`docs/HANDOFF.md` |
 | 备份恢复 | ✅ 本机自动备份与同机恢复演练已通过 | 当前无异地副本，不覆盖整机丢失恢复或全时点事务快照 | `docs/HANDOFF.md`、`docs/TECH_STACK.md` |
 | 需求修订（Scribe 无服务端幂等键） | 待确认是否回填既有需求 | 防止把本地 call_ref 误认为供应商幂等 | `docs/verification/scribe-idempotency-controlled-test.md` |
 | 真实供应商长期限流校准 | ⬜ 待生产小流量验收 | 本地速率不代表账号真实配额 | `docs/REDIS_COORDINATION.md`、`docs/PERFORMANCE_REPORT.md` |

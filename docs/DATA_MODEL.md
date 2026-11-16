@@ -2,7 +2,7 @@
 
 - 定位：记录当前 SQLite 数据表、字段、约束、职责及对应代码文件；同时列出多用户／高并发阶段计划新增的 PostgreSQL 表
 - 当前权威 DDL：`state/schema.sql`
-- 当前迁移：`state/migrations.py`，使用 `PRAGMA user_version`，当前版本为 v3
+- 当前迁移：`state/migrations.py`，使用 `PRAGMA user_version`，当前版本为 v4
 - 高并发设计：`.agent/high-concurrency-architecture.md`（设计稿，未提交）
 - HTTP、RPC、CLI、Runner 与外部服务接口见 `docs/API_REFERENCE.md`
 - 状态标记：「当前」表示代码和测试已实现；「计划」表示尚未建表，字段可在实施评审时细化
@@ -121,10 +121,11 @@
 | `provider` / `model` | TEXT | 供应商与模型 |
 | `usage_basis` | TEXT | 音频秒数、token、缓存和成本依据 |
 | `amount_est` | REAL | 金额估算；未知为 NULL |
+| `request_started` | INTEGER | 0/1；由intent预留后一次性claim，1后拒绝恢复重发 |
 | `call_ref` | TEXT | 唯一本地调用标识；不代表供应商幂等 |
 | `status` | TEXT | intent / success / failed / unknown |
 
-代码：`state/ledger.py` 实现两段式记账；`state/ledger_cli.py` 供 Runner 使用；`state/ledger_report.py` 提供只读管理报表。
+代码：`state/ledger.py` 实现两段式记账；`state/ledger_cli.py` 供 Runner 使用；`state/ledger_report.py` 提供只读管理报表。Runner 遇到 SDK 默认零 usage 或缺失 usage 时保留原金额预留并在 `usage_basis` 标记缺失，不把它核销为零。
 
 ### `execution_lock`
 

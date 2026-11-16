@@ -34,9 +34,15 @@
 | 验收项 | 结论 |
 | --- | --- |
 | 崩溃恢复 | 子任务失败即终态不自动重跑（符合付费红线）；父 conversation 的 transcript 持久化已由流程测试覆盖，恢复后由主代理决定是否重新派发 |
-| 成本归属 | 子任务 result 携带 usage 回传主 conversation；账本记录由主 conversation 侧（或 orchestrate）在 dispatch 返回后写 `state/ledger.py`，call_ref 与子任务 input.callRef 一致 |
+| 成本归属 | 本实验只验证子任务 result 携带模拟 usage；当时未写真实费用账本。当前账本接入见后续状态段 |
 | 产物落盘 | 子任务写文件用 create-only（`wx` 旗标），已存在则校验不覆盖；产物路径由 input 指定，与 manifest 登记在编排层完成 |
 | 父子完成关联与去重 | taskId 由 createTask 返回并随 dispatch 结果回传；同 callRef 扫描去重已验证 |
+
+## 后续真实模型接入状态
+
+上面的实验结果仅证明 fake 子任务的 Durable 形态，不作为真实付费保护证据。当前 Runner 实现已改为：dispatch 在 `createTask` 前基于目标模型价格目录写入带金额预留的 intent；子代理模型包装器在 Redis permit 后，以 SQLite 单次 claim 防止恢复重发；完成后回填 token usage 与费用，结果不明时保留预留。主 Agent 的 `streamSimple/completeSimple` 也逐请求预算并账本核销。测试见 `runner/src/model-budget.test.ts`、`runner/src/durable-adapter.test.ts` 与 `state/ledger.py`。
+
+该代码阶段仍需独立审阅，且价格目录来源需由运维配置并经人工核实；这些事实不代表生产预算阶段或业务 cron gate 通过。
 
 ## 对 ARCHITECTURE 待验证项的回填
 

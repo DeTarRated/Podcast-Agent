@@ -116,7 +116,7 @@ SQLite 单文件 + 备份；知识库仍是文本 + git（见上文「已定技�
 | 备份目录 | `/home/ubuntu/backups/podcast-agent/` |
 | 备份策略 | 每天北京时间约 03:30；最近 7 天 + 更早 4 个每周备份；恢复演练证据保存在 `/home/ubuntu/podcast-agent-runtime/restore-reports/` |
 
-服务器部署回归：Python 166 passed／20 skipped、Runner 28 passed、Review 14 passed；两期节目、账本、审批和当前交付已迁移并对账。生产性能数字尚未测量，不能沿用本地压测结果。
+服务器部署回归：Python 166 passed／20 skipped、Runner 28 passed、Review 14 passed；两期节目、账本、审批和当前交付已迁移并对账。2026-11-13 已完成 VPS 首轮顺序 fake／只读基准：队列 43.896 任务/秒（领取 p95 77.769ms）、管理 API 48.128 QPS（p95 408.849ms）、Redis 1512.636 次/秒（p95 34.754ms），均零错误。完整环境、参数差异与验收边界见 `docs/PERFORMANCE_REPORT.md`；这些不是生产 SLA 或真实供应商吞吐。
 
 ### cron 唤醒顺序（待部署验收）
 
