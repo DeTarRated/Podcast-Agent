@@ -492,3 +492,18 @@ test("默认输出上限来自配置，且不超过模型上限", async () => {
     delete process.env.PODCAST_MODEL_MAX_OUTPUT_TOKENS;
   }
 });
+
+test("子代理预授权按配置输入上界预留，不按模型窗口最坏情形", async () => {
+  setPriceEnv();
+  process.env.PODCAST_SUBAGENT_INPUT_TOKENS = "40000";
+  try {
+    const { estimateModelMaxCost } = await import("./model-budget.ts");
+    const bigModel = { ...model, contextWindow: 1_000_000, maxTokens: 384_000 } as unknown as Model<any>;
+    const subagent = estimateModelMaxCost(bigModel, new Date("2026-11-15T00:00:00Z"), undefined, "subagent");
+    const windowWorst = estimateModelMaxCost(bigModel, new Date("2026-11-15T00:00:00Z"));
+    assert.ok(subagent.amount < windowWorst.amount, `${subagent.amount} !< ${windowWorst.amount}`);
+    assert.match(subagent.usageBasis, /input_tokens=40000/);
+  } finally {
+    delete process.env.PODCAST_SUBAGENT_INPUT_TOKENS;
+  }
+});

@@ -288,3 +288,21 @@ def test_ledger_reconcile_success_rejects_other_statuses(conn, status):
 def test_ledger_reconcile_success_missing_ref(conn):
     with pytest.raises(ValueError):
         ledger.reconcile_success(conn, "r:missing")
+
+
+def test_pending_includes_resumable_statuses(conn):
+    """可恢复状态（downloaded/transcribed/translated）必须重新列出，否则中断的期数永远不再处理。"""
+    from state import execution
+
+    ids = {}
+    for status in ("discovered", "downloaded", "transcribed", "translated", "failed", "delivered"):
+        episode_id = episode.create(conn, guid=f"g-{status}", feed="f")
+        episode.update_status(conn, episode_id, status)
+        ids[status] = episode_id
+    pending = {row["id"] for row in execution.pending_episodes(conn, limit=20)}
+    assert ids["discovered"] in pending
+    assert ids["downloaded"] in pending
+    assert ids["transcribed"] in pending
+    assert ids["translated"] in pending
+    assert ids["failed"] not in pending
+    assert ids["delivered"] not in pending

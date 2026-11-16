@@ -129,13 +129,25 @@ function priceConfig(
   };
 }
 
+/** 子代理预授权输入上界：提示由固定上下文文件构成，不用模型窗口最坏情形。 */
+function subagentInputBound(model: Model<any>): number {
+  const raw = process.env.PODCAST_SUBAGENT_INPUT_TOKENS ?? "40000";
+  const bound = Number(raw);
+  if (!Number.isSafeInteger(bound) || bound <= 0) {
+    throw new Error("PODCAST_SUBAGENT_INPUT_TOKENS 非法");
+  }
+  return Math.min(model.contextWindow, bound);
+}
+
 export function estimateModelMaxCost(
   model: Model<any>,
   now: Date = new Date(),
   request?: { inputTokens?: number; outputTokens?: number },
+  mode: "request" | "subagent" = "request",
 ): { amount: number; usageBasis: string } {
   const price = priceConfig(model, now, {
-    inputTokens: request?.inputTokens ?? requestInputTokens(model, undefined),
+    inputTokens: request?.inputTokens
+      ?? (mode === "subagent" ? subagentInputBound(model) : requestInputTokens(model, undefined)),
     outputTokens: request?.outputTokens ?? requestOutputLimit(model),
   });
   return { amount: price.estimate, usageBasis: price.basis };

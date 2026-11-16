@@ -81,7 +81,8 @@ export class Runner {
         }
         const model = runtimeModels.getModel(input.model.provider, input.model.modelId);
         if (!model) throw new Error(`子代理模型未在Runner目录中配置: ${input.model.provider}/${input.model.modelId}`);
-        return estimateModelMaxCost(model);
+        // 子代理提示由固定上下文文件组成：按配置输入上界 + 输出上限预留，不按模型窗口最坏情形。
+        return estimateModelMaxCost(model, new Date(), undefined, "subagent");
       } : undefined;
       installTools(registry, options.tools, estimateSubagent);
     }

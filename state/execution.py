@@ -106,7 +106,8 @@ def pending_episodes(conn: sqlite3.Connection, *, limit: int = 10) -> list[sqlit
     return conn.execute(
         """
         SELECT id, guid, feed, title, published_at, enclosure, duration_secs
-        FROM episode WHERE status = 'discovered'
+        FROM episode
+        WHERE status IN ('discovered','downloaded','transcribed','translated')
         ORDER BY published_at IS NULL, published_at ASC, id ASC LIMIT ?
         """,
         (limit,),
