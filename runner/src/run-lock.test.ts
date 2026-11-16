@@ -71,3 +71,19 @@ test("子进程环境注入持锁token", () => {
   assert.equal(env.PODCAST_RUN_LOCK_TOKEN, "token-1");
   assert.equal(typeof env.PATH, "string");
 });
+
+test("持锁命令包含父进程存活哨兵，父进程消失时子进程自行退出", async () => {
+  let captured: string[] = [];
+  await acquireRunLock(((command: string, args: string[]) => {
+    captured = [command, ...args];
+    const child = new EventEmitter() as any;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    process.nextTick(() => child.stdout.write("podcast-agent-run-lock\n"));
+    return child;
+  }) as typeof spawn);
+  const hold = captured[captured.length - 1];
+  assert.ok(hold.includes(`kill -0 ${process.pid}`));
+  assert.ok(hold.includes("sleep 2"));
+});

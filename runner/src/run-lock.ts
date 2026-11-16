@@ -18,9 +18,12 @@ export function businessLockPath(): string {
 
 /** 申请共享锁；被占用或锁进程异常时返回 null。成功时锁进程保持存活直到 release。 */
 export async function acquireRunLock(spawnImpl: typeof spawn): Promise<RunLock | null> {
+  // 持锁子进程自己监测父进程存活：父进程被信号杀死时（SIGTERM/SIGKILL），
+  // 子进程在 ~2s 内自行退出并释放 flock，避免锁被永久占用。
+  const parentPid = process.pid;
+  const hold = `printf '%s\\n' '${LOCK_SIGNAL}'; while kill -0 ${parentPid} 2>/dev/null; do sleep 2; done`;
   const child = spawnImpl("flock", [
-    "--nonblocking", businessLockPath(), "--command",
-    `printf '%s\\n' '${LOCK_SIGNAL}'; exec sleep infinity`,
+    "--nonblocking", businessLockPath(), "--command", hold,
   ], { stdio: ["ignore", "pipe", "ignore"] });
 
   const acquired = await new Promise<boolean>((resolvePromise) => {
@@ -48,8 +51,24 @@ export async function acquireRunLock(spawnImpl: typeof spawn): Promise<RunLock |
     try { child.kill("SIGKILL"); } catch { /* 已退出 */ }
     process.removeListener("exit", release);
   };
-  // 父进程异常退出时不得遗留持锁进程；release 时移除监听避免累积。
-  process.on("exit", release);
+  // 正常退出与信号终止都要释放；release 时移除监听避免累积。
+  const onExit = () => { release(); };
+  const onSignal = (signal: NodeJS.Signals) => {
+    release();
+    process.off("exit", onExit);
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+    process.off("SIGHUP", onSighup);
+    // 交给默认处理让进程退出，锁已释放。
+    process.kill(process.pid, signal);
+  };
+  const onSigint = () => onSignal("SIGINT");
+  const onSigterm = () => onSignal("SIGTERM");
+  const onSighup = () => onSignal("SIGHUP");
+  process.on("exit", onExit);
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
+  process.on("SIGHUP", onSighup);
   return { release };
 }
 
