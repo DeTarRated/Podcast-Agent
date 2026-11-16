@@ -903,7 +903,12 @@ def revise_published(
     return _revision_data(conn, revision_id, reused=reused)
 
 
-def auto_approve_due(conn: sqlite3.Connection, *, now: str) -> dict:
+def auto_approve_due(
+    conn: sqlite3.Connection,
+    *,
+    now: str,
+    allowed_episode_ids: Optional[list[int]] = None,
+) -> dict:
     now = _canonical_time(now)
     rows = conn.execute(
         """
@@ -915,6 +920,9 @@ def auto_approve_due(conn: sqlite3.Connection, *, now: str) -> dict:
         """,
         (now,),
     ).fetchall()
+    if allowed_episode_ids is not None:
+        # 白名单启用时只允许列出的期数自动审批，其余保持待审状态。
+        rows = [row for row in rows if row["episode_id"] in allowed_episode_ids]
     items = []
     for row in rows:
         try:

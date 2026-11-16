@@ -8,7 +8,7 @@ import sys
 from typing import Optional
 
 from review import queries, service
-from state import db, ledger_report
+from state import allowlist, db, ledger_report, runtime_guard
 from state.postgres.user import allowed_resource_ids, can_access
 
 
@@ -153,7 +153,11 @@ def dispatch(conn: sqlite3.Connection, command: str, payload: dict, now: str) ->
     if command == "auto-approve-due":
         if payload.get("_user_id") is not None and payload.get("_user_role") not in ("owner", "admin"):
             raise ReviewError("invalid_state", "自动审批只允许管理员")
-        return service.auto_approve_due(conn, now=now)
+        runtime_guard.assert_business_running()
+        allow = allowlist.load()
+        return service.auto_approve_due(
+            conn, now=now, allowed_episode_ids=allowlist.episode_ids(allow)
+        )
     raise ValueError(f"未知 review command: {command}")
 
 

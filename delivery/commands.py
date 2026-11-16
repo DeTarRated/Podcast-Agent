@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from delivery import library, publish
 from delivery.errors import DeliveryError
+from state import allowlist, runtime_guard
 from state.postgres.user import allowed_resource_ids, can_access
 
 
@@ -17,7 +18,11 @@ def dispatch(conn, command: str, payload: dict, *, now: str, store=None) -> dict
     if command == "publish-approved":
         if payload.get("_user_id") is not None and payload.get("_user_role") not in ("owner", "admin"):
             raise DeliveryError("invalid_state", "发布只允许管理员")
-        return publish.publish_approved(conn, now=now, store=store)
+        runtime_guard.assert_business_running()
+        allow = allowlist.load()
+        return publish.publish_approved(
+            conn, now=now, store=store, allowed_episode_ids=allowlist.episode_ids(allow)
+        )
     if command == "mark-highlights-failed":
         if payload.get("_user_id") is not None and payload.get("_user_role") not in ("owner", "admin"):
             raise DeliveryError("invalid_state", "发布失败处理只允许管理员")

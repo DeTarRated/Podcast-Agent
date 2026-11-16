@@ -116,19 +116,27 @@ def _ensure_delivery(conn, approval: sqlite3.Row) -> sqlite3.Row:
     return _delivery_for(conn, approval["id"])
 
 
-def _supersede_stale(conn, now: str) -> None:
+def _supersede_stale(conn, now: str, allowed_episode_ids: Optional[list[int]] = None) -> None:
+    """维护写入同样尊重白名单范围；allowed_episode_ids 非 None 时只处理范围内记录。"""
+    if allowed_episode_ids is not None and not allowed_episode_ids:
+        return
+    scope = ""
+    params: list = [now]
+    if allowed_episode_ids is not None:
+        scope = " AND episode_id IN (%s)" % ",".join("?" * len(allowed_episode_ids))
+        params.extend(allowed_episode_ids)
     with conn:
         conn.execute(
-            """
+            f"""
             UPDATE delivery SET status = 'superseded', is_current = 0, updated_at = ?
             WHERE status IN ('pending','waiting_highlights','uploading','failed')
               AND approval_id IN (
                   SELECT a.id FROM approval a
                   JOIN review_revision r ON r.id = a.review_revision_id
                   WHERE r.is_current = 0 OR r.status = 'superseded'
-              )
+              ){scope}
             """,
-            (now,),
+            params,
         )
 
 
@@ -289,11 +297,21 @@ def mark_highlights_failed(conn: sqlite3.Connection, *, approval_id: int, error:
     return {"status": "failed", "approval_id": approval_id, "error": message}
 
 
-def publish_approved(conn: sqlite3.Connection, *, now: str, store=None) -> dict:
+def publish_approved(
+    conn: sqlite3.Connection,
+    *,
+    now: str,
+    store=None,
+    allowed_episode_ids: Optional[list[int]] = None,
+) -> dict:
     """逐期发布，单期失败不阻塞其他期；store 为 fake 时零真实 R2。"""
-    _supersede_stale(conn, now)
+    _supersede_stale(conn, now, allowed_episode_ids)
     items = []
-    for approval in _approved(conn):
+    approvals = _approved(conn)
+    if allowed_episode_ids is not None:
+        # 白名单启用时只发布允许的期数，其余批准保持待发布状态。
+        approvals = [a for a in approvals if a["episode_id"] in allowed_episode_ids]
+    for approval in approvals:
         try:
             result = _publish_one(conn, approval, store, now)
         except (DeliveryError, HighlightsError, OSError, srt_override.OverrideError) as exc:
