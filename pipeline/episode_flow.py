@@ -13,6 +13,7 @@ from typing import Optional
 import httpx
 
 from pipeline import download
+from pipeline import cost_guard
 from state import db, episode, estimate, execution, manifest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -160,8 +161,16 @@ def main(argv=None) -> int:
                 except estimate.EstimateError as exc:
                     item["estimate_error"] = str(exc)
                 else:
-                    item["estimated_cost"] = str(amount)
-                    item["estimate_basis"] = basis
+                    # 恢复执行时按剩余额度预留：整期上界与已结算费用不重复计入。
+                    remaining = cost_guard.remaining_allowance(item["id"])
+                    if remaining is not None and remaining <= 0:
+                        item["estimate_error"] = "本期额度已用尽，停止入队"
+                    else:
+                        if remaining is not None and amount > remaining:
+                            amount = remaining
+                            basis = f"{basis};clamped_to_remaining_usd={amount}"
+                        item["estimated_cost"] = str(amount)
+                        item["estimate_basis"] = basis
                 items.append(item)
             result = {
                 "status": "success",

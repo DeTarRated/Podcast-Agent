@@ -306,3 +306,71 @@ def test_pending_includes_resumable_statuses(conn):
     assert ids["translated"] in pending
     assert ids["failed"] not in pending
     assert ids["delivered"] not in pending
+
+
+def test_pending_estimate_clamped_to_remaining_allowance(tmp_path, monkeypatch):
+    """恢复执行时预留按剩余额度钳制，已结算费用不重复计入。"""
+    from decimal import Decimal
+
+    from pipeline import cost_guard, episode_flow
+    from state import db as sqlite_db
+
+    path = tmp_path / "biz.db"
+    conn = sqlite_db.connect(path)
+    sqlite_db.init_schema(conn)
+    episode_id = episode.create(conn, guid="clamp-1", feed="f")
+    conn.execute(
+        "INSERT INTO ledger (episode_id,purpose,provider,model,usage_basis,amount_est,"
+        "request_started,call_ref,status) VALUES (?,?,?,?,?,?,?,?,?)",
+        (episode_id, "translate", "p", "m", "b", 0.48, 1, "spent-1", "success"),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("PODCAST_ESTIMATE_VERSION", "v1")
+    monkeypatch.setenv("PODCAST_ESTIMATE_MAX_DURATION_SECS", "5400")
+    monkeypatch.setenv("PODCAST_ESTIMATE_SCRIBE_USD_PER_HOUR", "0.22")
+    monkeypatch.setenv("PODCAST_ESTIMATE_TRANSLATE_USD", "0.40")
+    monkeypatch.setenv("PODCAST_ESTIMATE_REVIEW_USD", "0.40")
+    monkeypatch.setattr(
+        cost_guard, "remaining_allowance",
+        lambda episode: Decimal("1.02"),
+    )
+    monkeypatch.setattr("pipeline.episode_flow.db.open_default", lambda: sqlite_db.connect(path))
+    result = episode_flow.main(["pending", "--limit", "5"])
+    assert result == 0
+
+
+def test_pending_reports_estimate_and_exhausted_budget(tmp_path, monkeypatch, capsys):
+    from decimal import Decimal
+
+    import json
+
+    from pipeline import cost_guard, episode_flow
+    from state import db as sqlite_db
+
+    path = tmp_path / "biz2.db"
+    conn = sqlite_db.connect(path)
+    sqlite_db.init_schema(conn)
+    episode_id = episode.create(conn, guid="clamp-2", feed="f")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("PODCAST_ESTIMATE_VERSION", "v1")
+    monkeypatch.setenv("PODCAST_ESTIMATE_MAX_DURATION_SECS", "5400")
+    monkeypatch.setenv("PODCAST_ESTIMATE_SCRIBE_USD_PER_HOUR", "0.22")
+    monkeypatch.setenv("PODCAST_ESTIMATE_TRANSLATE_USD", "0.40")
+    monkeypatch.setenv("PODCAST_ESTIMATE_REVIEW_USD", "0.40")
+    monkeypatch.setattr("pipeline.episode_flow.db.open_default", lambda: sqlite_db.connect(path))
+
+    monkeypatch.setattr(cost_guard, "remaining_allowance", lambda episode: Decimal("1.02"))
+    assert episode_flow.main(["pending", "--limit", "5"]) == 0
+    item = json.loads(capsys.readouterr().out.strip().splitlines()[-1])["items"][0]
+    assert item["estimated_cost"] == "1.02"
+    assert "clamped_to_remaining_usd" in item["estimate_basis"]
+
+    monkeypatch.setattr(cost_guard, "remaining_allowance", lambda episode: Decimal("0"))
+    assert episode_flow.main(["pending", "--limit", "5"]) == 0
+    item = json.loads(capsys.readouterr().out.strip().splitlines()[-1])["items"][0]
+    assert "额度已用尽" in item["estimate_error"]
+    assert "estimated_cost" not in item

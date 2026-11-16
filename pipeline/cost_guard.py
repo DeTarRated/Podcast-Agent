@@ -9,7 +9,14 @@ from decimal import Decimal
 
 from state import ledger
 from state.postgres import db as postgres_db
-from state.postgres.budget import BudgetDataError, _amount, _scope_spend
+from decimal import Decimal
+
+from state.postgres.budget import (
+    BudgetDataError,
+    _amount,
+    _scope_spend,
+    open_authoritative_ledger,
+)
 
 
 def load_limits(episode_id: int | None) -> list[dict]:
@@ -36,6 +43,39 @@ def load_limits(episode_id: int | None) -> list[dict]:
                 (episode_id,),
             ).fetchall())
         return limits
+    finally:
+        conn.close()
+
+
+def remaining_allowance(episode_id: int | None) -> Decimal | None:
+    """本期在已结算费用后仍可用的额度；无金额限额时返回 None（不限制）。
+
+    入队预留应按剩余额度计算，否则恢复执行会把已结算费用与整期上界重复计入。
+    """
+    limits = [item for item in load_limits(episode_id) if item.get("max_amount") is not None]
+    if not limits:
+        return None
+    conn = postgres_db.connect()
+    try:
+        ledger_conn = open_authoritative_ledger()
+        try:
+            remaining = None
+            for limit in limits:
+                ceiling = _amount(limit["max_amount"], "max_amount")
+                scope = "episode" if limit.get("episode_id") is not None else "global"
+                spend = _scope_spend(
+                    ledger_conn,
+                    scope=scope,
+                    period=limit.get("period") or "task",
+                    user_id=limit.get("user_id"),
+                    episode_id=episode_id,
+                    now=datetime.now(timezone.utc),
+                )
+                headroom = ceiling - spend
+                remaining = headroom if remaining is None else min(remaining, headroom)
+            return remaining
+        finally:
+            ledger_conn.close()
     finally:
         conn.close()
 
