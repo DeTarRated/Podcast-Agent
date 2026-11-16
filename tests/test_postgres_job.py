@@ -71,22 +71,15 @@ def test_idempotent_enqueue_rejects_changed_estimate_or_budget(conn):
         idempotency_key="same-economic-job", budget="1.00",
     )
     assert first["reused"] is False
-    # 更高估算 → 提升预留（不静默、不降级），并回报差异。
-    raised = job.enqueue_job(
+    # 估算变化：非 running 时采纳最新估算并记录差异，不改状态（不自动重试付费任务）。
+    updated = job.enqueue_job(
         conn, kind="transcribe", episode_id=None,
         payload={"estimated_cost": "0.50", "estimate_version": "v2"},
         idempotency_key="same-economic-job", budget="1.00",
     )
-    assert raised["reused"] is True
-    assert raised.get("estimate_raised") is True
-    assert conn.execute("SELECT payload->>'estimated_cost' AS v FROM job").fetchone()["v"] == "0.50"
-    # 更低估算 → 保留原预留，只回报差异。
-    kept = job.enqueue_job(
-        conn, kind="transcribe", episode_id=None,
-        payload={"estimated_cost": "0.10", "estimate_version": "v3"},
-        idempotency_key="same-economic-job", budget="1.00",
-    )
-    assert kept.get("estimate_kept") is True
+    assert updated["reused"] is True
+    assert updated.get("estimate_updated") is True
+    assert updated["previous_estimate"] == "0.25"
     assert conn.execute("SELECT payload->>'estimated_cost' AS v FROM job").fetchone()["v"] == "0.50"
     # 结构性差异（预算变化）仍必须失败关闭。
     with pytest.raises(job.JobError, match="kind/episode/budget"):
@@ -419,24 +412,21 @@ def test_legacy_job_without_estimate_can_be_upgraded_once(conn):
     assert job.get_job(conn, legacy["id"])["payload"]["estimated_cost"] == "0.916"
 
 
-def test_estimate_raise_keeps_reservation_and_records_reason(conn):
-    """期数推进后时长已知：更高估算提升预留，更低估算保留原预留，均不得静默。"""
+def test_estimate_update_on_resume_records_previous_value(conn):
+    """期数推进后时长已知：估算按最新依据更新并记录旧值，但不自动改变任务状态。"""
     base = job.enqueue_job(
         conn, kind="episode", episode_id=None,
         payload={"guid": "g", "estimated_cost": "1.13", "estimate_basis": "duration_source=cap"},
         idempotency_key="resume-1", available_at=START,
     )["job"]
-    raised = job.enqueue_job(
+    updated = job.enqueue_job(
         conn, kind="episode", episode_id=None,
-        payload={"guid": "g", "estimated_cost": "1.30", "estimate_basis": "duration_secs=2878"},
+        payload={"guid": "g", "estimated_cost": "0.98", "estimate_basis": "duration_secs=2878"},
         idempotency_key="resume-1", available_at=START,
     )
-    assert raised.get("estimate_raised") is True
-    assert job.get_job(conn, base["id"])["payload"]["estimated_cost"] == "1.30"
-    kept = job.enqueue_job(
-        conn, kind="episode", episode_id=None,
-        payload={"guid": "g", "estimated_cost": "0.90", "estimate_basis": "duration_secs=2878"},
-        idempotency_key="resume-1", available_at=START,
-    )
-    assert kept.get("estimate_kept") is True
-    assert job.get_job(conn, base["id"])["payload"]["estimated_cost"] == "1.30"
+    assert updated.get("estimate_updated") is True
+    assert updated["previous_estimate"] == "1.13"
+    row = job.get_job(conn, base["id"])
+    assert row["payload"]["estimated_cost"] == "0.98"
+    # 不由队列自动重试：状态保持不变。
+    assert row["status"] == "ready"

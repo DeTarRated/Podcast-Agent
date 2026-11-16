@@ -106,28 +106,24 @@ def enqueue_job(
             )
             estimate_changed = existing_estimate != estimate or existing_basis != basis
             if structurally_same and estimate_changed:
-                # 期数推进后时长已知，估算依据会变化；不得静默忽略，但也不能因此阻断恢复。
-                # 规则：仅在非 running 时允许对齐估算，且永不降低已有预留。
+                # 期数推进后时长已知、或按剩余额度重算：估算依据会变化。
+                # 规则：非 running 时采纳最新估算并记录差异；不改状态（不由队列自动重试付费任务）。
                 if row["status"] == "running":
                     raise JobError("running job 的估算不可改写")
                 if estimate is None:
                     raise JobError("新请求缺少估算，不得覆盖已有预留")
-                if existing_estimate is None:
-                    raise JobError("幂等 job 缺既有估算，拒绝隐式改写")
-                if estimate > existing_estimate:
-                    merged = {**(row["payload"] or {}), **(payload or {})}
-                    updated_row = conn.execute(
-                        """
-                        UPDATE job SET payload = %s, updated_at = %s
-                        WHERE id = %s RETURNING *
-                        """,
-                        (Jsonb(merged, dumps=_json_dumps), _now(None), row["id"]),
-                    ).fetchone()
-                    return {"job": updated_row, "reused": True, "estimate_raised": True}
-                # 新估算不高于既有预留：保留原预留，只回报差异，不改写 payload。
+                merged = {**(row["payload"] or {}), **(payload or {})}
+                updated_row = conn.execute(
+                    """
+                    UPDATE job SET payload = %s, updated_at = %s
+                    WHERE id = %s RETURNING *
+                    """,
+                    (Jsonb(merged, dumps=_json_dumps), _now(None), row["id"]),
+                ).fetchone()
                 return {
-                    "job": row, "reused": True, "estimate_kept": True,
-                    "existing_estimate": str(existing_estimate), "requested_estimate": str(estimate),
+                    "job": updated_row, "reused": True, "estimate_updated": True,
+                    "previous_estimate": None if existing_estimate is None else str(existing_estimate),
+                    "requested_estimate": str(estimate),
                 }
             if not structurally_same:
                 raise JobError("幂等 job 的 kind/episode/budget 与新请求不一致")
