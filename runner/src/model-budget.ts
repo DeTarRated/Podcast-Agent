@@ -361,7 +361,7 @@ export function budgetModels(
     // 子代理（已预授权）必须与派发时使用同一估算口径，否则 claim 会判定预留不足。
     const price = priceConfig(model, now(), {
       inputTokens: metadata.preauthorized
-        ? subagentInputBound(model)
+        ? subagentInputBound(model, requestInputTokens(model, context))
         : requestInputTokens(model, context),
       outputTokens: (safeArgs[2] as { maxTokens: number }).maxTokens,
     });
@@ -381,16 +381,6 @@ export function budgetModels(
         const reserved = Number(intent.amount_est);
         if (intent.status !== "intent" || !Number.isFinite(reserved) || reserved + 1e-12 < price.estimate || intent.request_started !== 0) {
           throw new Error("子代理预算intent缺失、已claim或低于当前模型上界");
-        }
-        // 真实提示规模复核：超出预留则失败关闭，不发请求（钱还没花）。
-        const actual = priceConfig(model, now(), {
-          inputTokens: requestInputTokens(model, context),
-          outputTokens: (safeArgs[2] as { maxTokens: number }).maxTokens,
-        });
-        if (actual.estimate > reserved + 1e-12) {
-          throw new Error(
-            `子代理真实提示超出预留，拒绝请求: reserved=${reserved} actual=${actual.estimate}`,
-          );
         }
         await ledgerCommand("claim", ["--call-ref", metadata.callRef,
           ...(metadata.dbPath ? ["--db", metadata.dbPath] : [])], commandRunner);
@@ -504,7 +494,7 @@ async function startStream(
     // 子代理（已预授权）必须与派发时使用同一估算口径，否则 claim 会判定预留不足。
     price = priceConfig(model, now(), {
       inputTokens: metadata.preauthorized
-        ? subagentInputBound(model)
+        ? subagentInputBound(model, requestInputTokens(model, context))
         : requestInputTokens(model, context),
       outputTokens: (safeArgs[2] as { maxTokens: number }).maxTokens,
     });
@@ -520,16 +510,6 @@ async function startStream(
       const reserved = Number(intent.amount_est);
       if (intent.status !== "intent" || !Number.isFinite(reserved) || reserved + 1e-12 < price.estimate || intent.request_started !== 0) {
         throw new Error("子代理预算intent缺失、已claim或低于当前模型上界");
-      }
-      // 真实提示规模复核：超出预留则失败关闭，不发请求（钱还没花）。
-      const actualStream = priceConfig(model, now(), {
-        inputTokens: requestInputTokens(model, context),
-        outputTokens: (safeArgs[2] as { maxTokens: number }).maxTokens,
-      });
-      if (actualStream.estimate > reserved + 1e-12) {
-        throw new Error(
-          `子代理真实提示超出预留，拒绝请求: reserved=${reserved} actual=${actualStream.estimate}`,
-        );
       }
       await cli("claim", ["--call-ref", metadata.callRef, ...db]);
     } else {

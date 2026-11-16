@@ -79,6 +79,8 @@ async function runPendingLocked(
 ): Promise<Record<string, unknown>> {
   assertBusinessRunning();
   const estimateFailures: Array<{ episode_id: number; error: string }> = [];
+  // 在途期数的估算冲突属良性跳过，不计入阶段失败。
+  const skippedInFlight: Array<{ episode_id: number; reason: string }> = [];
   const pending = await commandJson(runner, [
     "uv", "run", "python", "-m", "pipeline.episode_flow", "pending", "--limit", String(limit),
   ]);
@@ -103,12 +105,13 @@ async function runPendingLocked(
       // 白名单范围外的 Episode 由队列 CLI 显式跳过，不中断整个调度轮次。
       if (enqueued?.skipped === "not_in_allowlist") continue;
     } catch (error) {
-      // 单期入队失败（例如该期已有在途 running job）不得中断整轮，
-      // 记录可观测失败后继续处理其他期数。
-      estimateFailures.push({
-        episode_id: episode.id,
-        error: `enqueue_failed: ${error instanceof Error ? error.message : String(error)}`,
-      });
+      // 单期入队失败不得中断整轮；区分「该期仍在跑」与真实估算错误。
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("running job 的估算不可改写")) {
+        skippedInFlight.push({ episode_id: episode.id, reason: "running" });
+      } else {
+        estimateFailures.push({ episode_id: episode.id, error: `enqueue_failed: ${message}` });
+      }
       continue;
     }
   }
@@ -233,6 +236,7 @@ async function runPendingLocked(
     lease_lost: leaseLost,
     pause_write_failed: pauseWriteFailed,
     estimate_failures: estimateFailures,
+    skipped_in_flight: skippedInFlight,
     items: results,
     job_ids: results.map((item) => item.job_id),
   };

@@ -491,3 +491,18 @@ test("估算失败的 Episode 不入队，并计入 drive-pending 失败", async
   // 无估算时不得创建 job（否则幂等冲突会把 Episode 卡死）。
   assert.equal(base.uvCalls.some((args) => args[4] === "enqueue-episode"), false);
 });
+
+test("在途冲突不判失败：skipped_in_flight 不进入 failures", async () => {
+  const base = router();
+  const withInFlight: typeof base.runner = async (command, args, opts) => {
+    if (args[3] === "pipeline.episode_flow" && args[4] === "pending") {
+      return { exitCode: 0, stdout: JSON.stringify({ status: "success", data: { items: [] } }), stderr: "" };
+    }
+    return base.runner(command, args, opts);
+  };
+  const result = await runBusinessCycle({
+    commandRunner: withInFlight, spawnImpl: spawnFake(), limit: 2, parallel: 1, runId: "inflight-1",
+  });
+  assert.equal(result.status, "success");
+  assert.deepEqual(result.failures, []);
+});

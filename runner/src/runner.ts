@@ -94,7 +94,8 @@ export class Runner {
             throw new Error(`子代理上下文文件不可读，无法估算费用: ${file}`);
           }
         }
-        const promptTokens = bytes > 0 ? Math.ceil(bytes / 3.5) : undefined;
+        // 字节→token 估算留 30% 余量：tokenizer 对中文/代码的估算可能高于 chars/3.5。
+        const promptTokens = bytes > 0 ? Math.ceil((bytes / 3.5) * 1.3) : undefined;
         return estimateModelMaxCost(
           model, new Date(),
           promptTokens === undefined ? undefined : { inputTokens: promptTokens },

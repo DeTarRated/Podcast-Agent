@@ -102,7 +102,7 @@ function queueRunner(options: { heartbeatUpdated?: boolean; claimJobs?: number; 
       if (action === "enqueue-episode") {
         if (options.enqueueFailsFor !== undefined &&
             Number(args[actionIndex + 1]) === options.enqueueFailsFor) {
-          return { exitCode: 1, stdout: JSON.stringify({ status: "failed", error: "running job 的估算不可改写" }), stderr: "" };
+          return { exitCode: 1, stdout: JSON.stringify({ status: "failed", error: "估算配置非法" }), stderr: "" };
         }
         result = { reused: false };
       }
@@ -296,4 +296,31 @@ test("单期入队失败不中断整轮：记录后可继续处理其他期数",
   assert.match(failures[0].error, /enqueue_failed/);
   // 另一期仍然被领取。
   assert.equal(actions.filter((a) => a === "claim").length >= 1, true);
+});
+
+test("在途期数的估算冲突记为良性跳过，不计入失败", async () => {
+  const { runner } = queueRunner({ claimJobs: 0 });
+  const inflight = (async (command: string, args: string[]) => {
+    const result = await runner(command, args);
+    if (args[4] === "enqueue-episode" && Number(args[5]) === 2) {
+      return {
+        exitCode: 1,
+        stdout: JSON.stringify({ status: "failed", error: "running job 的估算不可改写" }),
+        stderr: "",
+      };
+    }
+    return result;
+  }) as typeof runner;
+  const result = await runPending({
+    commandRunner: inflight,
+    spawnImpl: spawnFor(true),
+    parallel: 1,
+    limit: 2,
+    heartbeatMs: 60_000,
+  }) as Record<string, unknown>;
+  const inFlight = result.skipped_in_flight as Array<{ episode_id: number }>;
+  const failures = result.estimate_failures as Array<{ episode_id: number }>;
+  assert.deepEqual(inFlight.map((item) => item.episode_id), [2]);
+  // 在途冲突不进失败列表。
+  assert.deepEqual(failures, []);
 });

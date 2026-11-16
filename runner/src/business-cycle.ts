@@ -282,6 +282,7 @@ export async function runBusinessCycle(options: CycleOptions = {}): Promise<Reco
       } else {
         if (!Array.isArray(pending.job_ids)) throw new Error("drive-pending 输出缺字段或类型非法: job_ids");
         if (!Array.isArray(pending.estimate_failures)) throw new Error("drive-pending 输出缺字段或类型非法: estimate_failures");
+        if (!Array.isArray(pending.skipped_in_flight)) throw new Error("drive-pending 输出缺字段或类型非法: skipped_in_flight");
         const summary = {
           claimed: needNumber(pending, "claimed", "drive-pending"),
           completed: needNumber(pending, "completed", "drive-pending"),
@@ -289,6 +290,7 @@ export async function runBusinessCycle(options: CycleOptions = {}): Promise<Reco
           lease_lost: needBoolean(pending, "lease_lost", "drive-pending"),
           job_ids: pending.job_ids as number[],
           estimate_failures: (pending.estimate_failures as Array<Record<string, unknown>>).length,
+          skipped_in_flight: (pending.skipped_in_flight as Array<Record<string, unknown>>).length,
         };
         if (summary.estimate_failures > 0) {
           fail("drive-pending", `estimate_failed=${summary.estimate_failures}`, summary);
