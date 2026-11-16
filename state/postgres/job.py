@@ -99,14 +99,38 @@ def enqueue_job(
                 ).fetchone()
                 # 处于 transaction() 上下文内，提交由上下文负责，此处不得显式 commit。
                 return {"job": row, "reused": True, "upgraded_estimate": True}
-            if (
-                row["kind"] != kind
-                or row["episode_id"] != episode_id
-                or row["budget"] != budget
-                or existing_estimate != estimate
-                or existing_basis != basis
-            ):
-                raise JobError("幂等 job 的 kind/episode/estimated_cost/estimate_basis/budget 与新请求不一致")
+            structurally_same = (
+                row["kind"] == kind
+                and row["episode_id"] == episode_id
+                and row["budget"] == budget
+            )
+            estimate_changed = existing_estimate != estimate or existing_basis != basis
+            if structurally_same and estimate_changed:
+                # 期数推进后时长已知，估算依据会变化；不得静默忽略，但也不能因此阻断恢复。
+                # 规则：仅在非 running 时允许对齐估算，且永不降低已有预留。
+                if row["status"] == "running":
+                    raise JobError("running job 的估算不可改写")
+                if estimate is None:
+                    raise JobError("新请求缺少估算，不得覆盖已有预留")
+                if existing_estimate is None:
+                    raise JobError("幂等 job 缺既有估算，拒绝隐式改写")
+                if estimate > existing_estimate:
+                    merged = {**(row["payload"] or {}), **(payload or {})}
+                    updated_row = conn.execute(
+                        """
+                        UPDATE job SET payload = %s, updated_at = %s
+                        WHERE id = %s RETURNING *
+                        """,
+                        (Jsonb(merged, dumps=_json_dumps), _now(None), row["id"]),
+                    ).fetchone()
+                    return {"job": updated_row, "reused": True, "estimate_raised": True}
+                # 新估算不高于既有预留：保留原预留，只回报差异，不改写 payload。
+                return {
+                    "job": row, "reused": True, "estimate_kept": True,
+                    "existing_estimate": str(existing_estimate), "requested_estimate": str(estimate),
+                }
+            if not structurally_same:
+                raise JobError("幂等 job 的 kind/episode/budget 与新请求不一致")
     conn.commit()
     return {"job": row, "reused": reused}
 
