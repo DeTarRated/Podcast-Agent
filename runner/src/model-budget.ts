@@ -352,8 +352,11 @@ export function budgetModels(
     const context = args[1];
     const metadata = callMetadata(model, context, scope);
     const safeArgs = singleAttemptArgs(args, model);
+    // 子代理（已预授权）必须与派发时使用同一估算口径，否则 claim 会判定预留不足。
     const price = priceConfig(model, now(), {
-      inputTokens: requestInputTokens(model, context),
+      inputTokens: metadata.preauthorized
+        ? subagentInputBound(model)
+        : requestInputTokens(model, context),
       outputTokens: (safeArgs[2] as { maxTokens: number }).maxTokens,
     });
     // 付费边界复查暂停：取限流许可与写账本之前失败关闭。
@@ -482,8 +485,11 @@ async function startStream(
   try {
     metadata = callMetadata(model, context, scope);
     const safeArgs = singleAttemptArgs(args, model);
+    // 子代理（已预授权）必须与派发时使用同一估算口径，否则 claim 会判定预留不足。
     price = priceConfig(model, now(), {
-      inputTokens: requestInputTokens(model, context),
+      inputTokens: metadata.preauthorized
+        ? subagentInputBound(model)
+        : requestInputTokens(model, context),
       outputTokens: (safeArgs[2] as { maxTokens: number }).maxTokens,
     });
     // 付费边界复查暂停：取限流许可与写账本之前失败关闭。

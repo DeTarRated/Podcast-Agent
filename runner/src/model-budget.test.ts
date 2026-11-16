@@ -507,3 +507,21 @@ test("子代理预授权按配置输入上界预留，不按模型窗口最坏�
     delete process.env.PODCAST_SUBAGENT_INPUT_TOKENS;
   }
 });
+
+test("子代理claim与派发使用同一估算口径，预留足够即通过", async () => {
+  setPriceEnv();
+  process.env.PODCAST_SUBAGENT_INPUT_TOKENS = "40000";
+  try {
+    const f = fixture({ preauthorized: true });
+    const guarded = budgetModels(f.models, { episodeId: 17 }, f.deps);
+    const context = tagBudgetCall({ messages: [] }, {
+      episodeId: 17, purpose: "review", provider: "deepseek", model: "mock-main",
+      callRef: "review:17:v1",
+    });
+    await guarded.completeSimple(model, context as never, {});
+    assert.ok(f.calls.includes("ledger:claim"));
+    assert.equal(f.status(), "success");
+  } finally {
+    delete process.env.PODCAST_SUBAGENT_INPUT_TOKENS;
+  }
+});
