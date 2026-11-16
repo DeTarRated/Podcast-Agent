@@ -66,6 +66,25 @@ async function writeOutcome(
   await ledgerCli("outcome", args);
 }
 
+async function getLedgerField(callRef: string, field: "status" | "request_started", dbPath?: string): Promise<unknown> {
+  const args = ["--call-ref", callRef];
+  if (dbPath) args.push("--db", dbPath);
+  const r = await runCommand("uv", ["run", "python", "-m", "state.ledger_cli", "get", ...args], {
+    cwd: REPO_ROOT, timeoutMs: 30_000,
+  });
+  const lastLine = r.stdout.trim().split("\n").at(-1) ?? "{}";
+  const payload = JSON.parse(lastLine) as { status?: string; data?: Record<string, unknown> };
+  if (payload.status !== "success" || !payload.data) {
+    throw new Error(`ledger get 未返回有效状态: ${lastLine.slice(0, 200)}`);
+  }
+  return payload.data[field];
+}
+
+async function getRequestStarted(callRef: string, dbPath?: string): Promise<boolean> {
+  const value = await getLedgerField(callRef, "request_started", dbPath);
+  return value === 1 || value === true;
+}
+
 async function getLedgerStatus(callRef: string, dbPath?: string): Promise<string> {
   const args = ["--call-ref", callRef];
   if (dbPath) args.push("--db", dbPath);
@@ -92,10 +111,12 @@ export interface DispatchLedger {
   writeIntent: typeof writeIntent;
   writeOutcome: typeof writeOutcome;
   getStatus: typeof getLedgerStatus;
+  getRequestStarted: typeof getRequestStarted;
   reconcile: typeof reconcileLedger;
 }
 const defaultLedger: DispatchLedger = {
-  writeIntent, writeOutcome, getStatus: getLedgerStatus, reconcile: reconcileLedger,
+  writeIntent, writeOutcome, getStatus: getLedgerStatus,
+  getRequestStarted, reconcile: reconcileLedger,
 };
 
 /** 同一实现供真实工具与 fake API/账本契约测试使用，不另建调度状态机。 */
@@ -134,7 +155,16 @@ export async function dispatchSubagent(
     }
     cursor = page.next;
   } while (cursor !== undefined && taskId === undefined);
-  const reused = taskId !== undefined;
+  let reused = taskId !== undefined;
+  if (reused && input.ledger) {
+    // 复用前核实：账本从未发出请求（request_started=0）才允许重建子任务；
+    // 一旦请求可能已发出，保持失败终态，绝不重发付费请求。
+    const started = await ledger.getRequestStarted(input.callRef, input.ledger.dbPath);
+    if (started === false) {
+      taskId = undefined;
+      reused = false;
+    }
+  }
   if (taskId === undefined) {
     // 先按目标模型最大上下文费用预算并落 intent，再创建任务；子代理实际请求时一次性claim。
     // 扫描与 intent 之间可能出现暂停标记，写 intent 与创建任务前复查。

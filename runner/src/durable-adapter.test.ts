@@ -20,7 +20,7 @@ const completed = { state: { status: "terminal", outcome: { status: "completed",
   usage: { input: 20, output: 10, cacheRead: 2, totalTokens: 30, costTotal: 0.01 },
 } } } };
 
-function fixture(options: { reused?: boolean; status?: string; wait?: () => Promise<unknown>; createFails?: boolean } = {}) {
+function fixture(options: { reused?: boolean; status?: string; wait?: () => Promise<unknown>; createFails?: boolean; requestStarted?: boolean } = {}) {
   const calls: string[] = [];
   let status = options.status ?? "missing";
   let usage: string | undefined;
@@ -30,6 +30,7 @@ function fixture(options: { reused?: boolean; status?: string; wait?: () => Prom
       calls.push("outcome:" + next); assert.equal(status, "intent"); status = next; usage = basis;
     },
     async getStatus() { return status; },
+    async getRequestStarted() { return options.requestStarted ?? true; },
     async reconcile(_ref, basis) { calls.push("reconcile"); assert.equal(status, "unknown"); status = "success"; usage = basis; },
   };
   // 只有 fake SDK 边界使用类型断言；被测适配器内部不将数字 id 转为字符串。
@@ -178,6 +179,7 @@ test("intent 落库与 createTask 之间出现暂停：intent释放为failed且�
       },
       writeOutcome: f.ledger.writeOutcome,
       getStatus: f.ledger.getStatus,
+      getRequestStarted: f.ledger.getRequestStarted,
       reconcile: f.ledger.reconcile,
     };
     await assert.rejects(
@@ -197,4 +199,18 @@ test("create 失败未触发模型调用，不写费用账本且不进入 wait",
   await assert.rejects(dispatch(f), /create failed/);
   assert.deepEqual(f.calls, ["scan", "intent", "create", "outcome:failed"]);
   assert.equal(f.status(), "failed");
+});
+
+test("既有失败子任务但请求从未发出：允许重建，不当作重复付费", async () => {
+  const f = fixture({ reused: true, requestStarted: false });
+  const result = await dispatchSubagent(input, f.api, BACKGROUND_CONTEXT, f.ledger, estimateSubagent);
+  assert.ok(result);
+  // 账本 record_started=false → 重建任务（create 被调用），而不是复用失败任务。
+  assert.equal(f.calls.includes("create"), true);
+});
+
+test("既有失败子任务且请求已发出：保持终态，不重建不重发", async () => {
+  const f = fixture({ reused: true, requestStarted: true });
+  await dispatchSubagent(input, f.api, BACKGROUND_CONTEXT, f.ledger, estimateSubagent);
+  assert.equal(f.calls.includes("create"), false);
 });
