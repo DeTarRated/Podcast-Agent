@@ -16,6 +16,7 @@ from typing import Optional
 
 import httpx
 
+from discover import policy
 from state import ledger, runtime_guard
 from pipeline.provider_gate import acquire_or_raise
 from pipeline import cost_guard
@@ -32,34 +33,36 @@ class ClassificationResult:
     call_ref: str
 
 
-DEFAULT_INTERESTS = "Chelsea 男子足球队"
+DEFAULT_INTERESTS = policy.FALLBACK_LABEL
+
+
+def load_policy():
+    """策略非法统一转为 ClassificationError，保证调用方失败关闭。"""
+    try:
+        return policy.load()
+    except policy.PolicyError as exc:
+        raise ClassificationError(str(exc)) from None
 
 
 def interests() -> list[str]:
-    """关注的俱乐部／主题，来自 PODCAST_CLASSIFY_TOPICS（逗号分隔）。
-
-    缺失时沿用历史默认（只关心 Chelsea 男足）；配置非法一律失败关闭，
-    避免“配置写错就变成全量下载”。
-    """
-    raw = os.environ.get("PODCAST_CLASSIFY_TOPICS", DEFAULT_INTERESTS)
-    items = [item.strip() for item in raw.split(",") if item.strip()]
-    if not items or len(items) > 8:
-        raise ClassificationError("PODCAST_CLASSIFY_TOPICS 必须为 1..8 个逗号分隔条目")
-    for item in items:
-        if len(item) > 40 or any(ch in item for ch in "\n\r{}"):
-            raise ClassificationError(f"PODCAST_CLASSIFY_TOPICS 条目非法: {item!r}")
-    return items
+    """向后兼容：返回当前默认 feed 的关注标签（策略文件不存在时即 env 名单）。"""
+    current = load_policy()
+    topics = current.resolve(0) or tuple(current.topics[key] for key in current.default_topics)
+    return [topic.label for topic in topics]
 
 
-def system_prompt_for(items: list[str]) -> str:
-    topics = "、".join(items)
-    return (
-        f"你是播客元数据分类器。只判断是否可能涉及以下对象：{topics}。"
-        "判定范围限于男子一线队，包括球员、教练、管理层、比赛、转会、伤病和战术讨论。"
-        "与上述对象无关的其他球队、其他运动或女足内容应判 false。"
-        "无法确定但有潜在男足关联时判 true，避免漏掉。"
-        '只输出 JSON object：{"relevant":true或false,"reason":"简短原因"}。'
-    )
+def system_prompt_for(topics, current: "policy.Policy | None" = None) -> str:
+    """按策略渲染提示词；传入标签字符串列表时自动转成无别名的临时策略。"""
+    if topics and isinstance(topics[0], str):
+        temp = policy.Policy(
+            scope="男子一线队", unknown_is_relevant=True,
+            topics={f"t{i}": policy.Topic(key=f"t{i}", label=label, aliases=())
+                    for i, label in enumerate(topics)},
+            default_topics=tuple(f"t{i}" for i in range(len(topics))),
+            feed_topics={}, exclude_keywords=(),
+        )
+        return policy.prompt_for(temp, tuple(temp.topics.values()))
+    return policy.prompt_for(current or load_policy(), tuple(topics))
 
 
 def call_ref_for(feed_id: int, guid: str, title: str, summary: str) -> str:
@@ -136,6 +139,14 @@ class DeepSeekClassifier:
     def __call__(self, conn: sqlite3.Connection, candidate: sqlite3.Row) -> ClassificationResult:
         title = (candidate["title"] or "")[:1000]
         summary = (candidate["summary"] or "")[:6000]
+        current = load_policy()
+        topics = current.resolve(int(candidate["feed_id"]))
+        # 预过滤：命中排除词直接跳过，不产生付费调用与账本行。
+        hit = current.excluded_by(f"{title}\n{summary}")
+        if hit is not None:
+            return ClassificationResult(False, f"prefilter_excluded:{hit}", "")
+        if not topics:
+            return ClassificationResult(False, "feed_topics_empty", "")
         call_ref = call_ref_for(candidate["feed_id"], candidate["guid"], title, summary)
         existing = ledger.get_by_ref(conn, call_ref)
         if existing is not None:
@@ -144,7 +155,7 @@ class DeepSeekClassifier:
             )
         # 付费边界失败关闭：暂停标记存在时不取限流许可、不落 intent、不发请求。
         runtime_guard.assert_business_running()
-        system_prompt = system_prompt_for(interests())
+        system_prompt = policy.prompt_for(current, topics)
         user_content = f"标题：{title}\n简介：{summary}"
         estimate, max_output_tokens, estimate_basis = _estimate_request(
             self.model, system_prompt, title, summary,

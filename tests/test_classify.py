@@ -374,3 +374,62 @@ def test_custom_topics_reach_classifier_request(conn, monkeypatch):
     classifier(conn, candidate)
     system = captured[0]["messages"][0]["content"]
     assert "Manchester United" in system
+
+
+def test_prefilter_keyword_skips_without_paid_call(conn, monkeypatch, tmp_path):
+    """排除词命中：零付费调用、零账本行，直接判定不相关。"""
+    feed_id = _feed(conn)
+    policy_file = tmp_path / "p.json"
+    policy_file.write_text(json.dumps({
+        "version": 1,
+        "topics": {"chelsea": {"label": "Chelsea 男子足球队"}},
+        "default_topics": ["chelsea"],
+        "prefilter": {"exclude_keywords": ["rugby"]},
+    }), encoding="utf-8")
+    monkeypatch.setenv("PODCAST_CLASSIFY_POLICY", str(policy_file))
+    row = discovery.insert_candidate(
+        conn, feed_id=feed_id, guid="rugby-ep", title="Rugby round-up",
+        published_at=None, enclosure="https://cdn.example.com/a.mp3",
+        summary="Dragons Slay the All Blacks", now=NOW,
+    )
+    conn.commit()
+    candidate = discovery.get_candidate(conn, feed_id, "rugby-ep")
+    calls = []
+    classifier = DeepSeekClassifier(api_key="test-key", transport=httpx.MockTransport(
+        lambda request: calls.append(request) or httpx.Response(200, json={})
+    ))
+    decision = classifier(conn, candidate)
+    assert decision.relevant is False
+    assert decision.reason.startswith("prefilter_excluded:")
+    assert calls == []
+    assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 0
+
+
+def test_feed_scoped_topics_change_prompt(conn, monkeypatch, tmp_path):
+    """按 feed 组合：不同 feed 拿到不同关注对象。"""
+    feed_id = _feed(conn)
+    policy_file = tmp_path / "p2.json"
+    policy_file.write_text(json.dumps({
+        "version": 1,
+        "topics": {
+            "chelsea": {"label": "Chelsea 男子足球队"},
+            "man-utd": {"label": "Manchester United 男子足球队"},
+        },
+        "default_topics": ["chelsea"],
+        "feeds": {str(feed_id): ["man-utd"]},
+    }), encoding="utf-8")
+    monkeypatch.setenv("PODCAST_CLASSIFY_POLICY", str(policy_file))
+    candidate = _candidate(conn)
+    captured = []
+
+    def handler(request):
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps({"relevant": True, "reason": "MU"})}}],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 5},
+        })
+
+    classifier = DeepSeekClassifier(api_key="test-key", transport=httpx.MockTransport(handler))
+    classifier(conn, candidate)
+    system = captured[0]["messages"][0]["content"]
+    assert "Manchester United" in system and "Chelsea" not in system

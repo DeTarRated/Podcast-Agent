@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "scope": "男子一线队",
+  "unknown_is_relevant": true,
+  "topics": {
+    "chelsea": {"label": "Chelsea 男子足球队", "aliases": ["切尔西", "Blues"]},
+    "man-utd": {"label": "Manchester United 男子足球队", "aliases": ["曼联", "Man Utd", "MUFC"]},
+    "arsenal": {"label": "Arsenal 男子足球队", "aliases": ["阿森纳", "Gunners"]}
+  },
+  "default_topics": ["chelsea", "man-utd"],
+  "feeds": {
+    "1": ["chelsea", "man-utd"],
+    "3": ["chelsea", "man-utd"],
+    "9": []
+  },
+  "prefilter": {
+    "exclude_keywords": ["rugby", "cricket", "Formula 1", "boxing", "darts"]
+  }
+}
