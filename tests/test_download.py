@@ -191,12 +191,11 @@ def test_download_refreshes_expired_link_and_succeeds(conn, tmp_path, monkeypatc
     from pipeline import download, download_refresh, episode_flow
     from state import episode
 
-    episode_id = episode.create(conn, guid="ep-stale", feed="https://feeds.example.com/show.xml")
-    conn.execute(
-        "UPDATE episode SET status='downloaded', enclosure=? WHERE id=?",
-        ("https://cdn.example.com/expired.mp3", episode_id),
+    # 真实首下路径：discovered + 入队时带 enclosure。
+    episode_id = episode.create(
+        conn, guid="ep-stale", feed="https://feeds.example.com/show.xml",
+        enclosure="https://cdn.example.com/expired.mp3",
     )
-    conn.commit()
 
     calls = []
 
@@ -229,12 +228,10 @@ def test_download_does_not_refresh_on_server_error(conn, tmp_path, monkeypatch):
     from pipeline import download, download_refresh, episode_flow
     from state import episode
 
-    episode_id = episode.create(conn, guid="ep-500", feed="https://feeds.example.com/show.xml")
-    conn.execute(
-        "UPDATE episode SET status='downloaded', enclosure=? WHERE id=?",
-        ("https://cdn.example.com/boom.mp3", episode_id),
+    episode_id = episode.create(
+        conn, guid="ep-500", feed="https://feeds.example.com/show.xml",
+        enclosure="https://cdn.example.com/boom.mp3",
     )
-    conn.commit()
     refreshed = []
     monkeypatch.setattr(
         download_refresh, "fetch_fresh_enclosure",
@@ -354,3 +351,63 @@ def test_is_stale_link_uses_real_raise_for_status():
     with pytest.raises(httpx.HTTPStatusError) as error:
         response.raise_for_status()
     assert download_refresh.is_stale_link(error.value) is True
+
+
+# ---- 200 + HTML 错误体 / Atom feed ----
+
+
+def test_html_error_page_is_treated_as_invalid_audio(tmp_path):
+    """托管方返回 200 + HTML 错误页时按下载失败处理，不落成品文件。"""
+    from pipeline import download
+
+    body = b"<!DOCTYPE html><html><body>Not found</body></html>"
+
+    def handler(request):
+        return httpx.Response(
+            200, content=body, headers={"content-type": "audio/mpeg"}
+        )
+
+    dest = tmp_path / "a.mp3"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as _client:
+        pass  # 保持与生产一致：内部自建 Client
+    import pipeline.download as module
+    original = httpx.Client
+    try:
+        module.httpx.Client = lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs)
+        with pytest.raises(download.InvalidAudioPayload) as error:
+            download.download("https://cdn.example.com/a.mp3", dest, trust_env=False)
+    finally:
+        module.httpx.Client = original
+    message = str(error.value)
+    assert "不是音频" in message and "content_type=audio/mpeg" in message
+    assert not dest.exists()
+    assert not dest.with_suffix(".mp3.part").exists()
+
+
+def test_bom_and_whitespace_before_markup_is_detected():
+    from pipeline.download import _looks_like_markup
+
+    assert _looks_like_markup(b"\xef\xbb\xbf  \n<!doctype html>") is True
+    assert _looks_like_markup(b"<?xml version='1.0'?><Error/>") is True
+    # 真实 mp3 帧头不应被误判
+    assert _looks_like_markup(bytes([0xFF, 0xFB, 0x90, 0x00]) + b"\x00" * 100) is False
+
+
+def test_atom_feed_enclosure_is_resolved():
+    """Atom 方言同样走真实解析：link rel=enclosure。"""
+    from pipeline import download_refresh
+
+    atom = b"""<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>t</title>
+  <entry>
+    <id>atom-ep-1</id>
+    <title>Atom episode</title>
+    <link rel="enclosure" type="audio/mpeg" href="https://cdn.example.com/atom.mp3"/>
+  </entry>
+</feed>"""
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=atom))
+    url = download_refresh.fetch_fresh_enclosure(
+        "https://feeds.example.com/atom.xml", "atom-ep-1", transport=transport, trust_env=False
+    )
+    assert url == "https://cdn.example.com/atom.mp3"

@@ -15,6 +15,20 @@ from mutagen.mp3 import MP3
 log = logging.getLogger(__name__)
 
 CHUNK_SIZE = 64 * 1024
+SNIFF_BYTES = 1024
+# 错误页常被声明成 audio/*，所以按字节嗅探而不是信 Content-Type；
+# 真实 mp3 不会以这些开头，误杀风险低。
+_HTML_MARKERS = (b"<!doctype", b"<html", b"<?xml")
+
+
+class InvalidAudioPayload(OSError):
+    """下载返回 200 但内容明显不是音频（多为托管方错误页）。继承 OSError 以落入既有重试捕获集合。"""
+
+
+def _looks_like_markup(head: bytes) -> bool:
+    probe = head.lstrip(b"\xef\xbb\xbf").lstrip()
+    lowered = probe[:16].lower()
+    return any(lowered.startswith(marker) for marker in _HTML_MARKERS)
 
 
 def sha256_file(path: Path) -> str:
@@ -52,9 +66,18 @@ def download(url: str, dest: Path, *, timeout: float = 120.0, trust_env: bool = 
         with httpx.Client(follow_redirects=True, timeout=timeout, trust_env=trust_env) as client:
             with client.stream("GET", url) as resp:
                 resp.raise_for_status()
+                head = b""
                 with open(tmp, "wb") as f:
                     for chunk in resp.iter_bytes():
+                        if len(head) < SNIFF_BYTES:
+                            head += chunk[: SNIFF_BYTES - len(head)]
                         f.write(chunk)
+                if _looks_like_markup(head):
+                    # 200 + HTML/XML 错误体：当作下载失败，交给既有重试与清理逻辑。
+                    raise InvalidAudioPayload(
+                        "响应内容不是音频: content_type="
+                        f"{resp.headers.get('content-type', '<none>')} head={head[:80]!r}"
+                    )
     except Exception:
         tmp.unlink(missing_ok=True)
         raise

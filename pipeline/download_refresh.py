@@ -14,6 +14,9 @@ import feedparser
 import httpx
 
 # 只有这些状态码视为「链接过期」，其余错误按原样失败，避免掩盖真实故障。
+# 401 刻意不纳入：它通常表示鉴权失败（私有 feed、UA／地域拦截），重取 feed 也拿不到
+# 可用链接，且会把真实鉴权故障记成「链接可能过期」。代价是一次多余的 feed GET 与语义错标。
+# 若某托管方确实用 401 表达签名过期，应在此集合增加取值，而不是改判定逻辑。
 STALE_LINK_STATUSES = frozenset({403, 404, 410})
 
 
@@ -91,17 +94,17 @@ def refresh_episode_enclosure(
 
         now = utcnow_iso()
         try:
-            conn.execute(
-                "UPDATE episode SET enclosure = ?, updated_at = ? WHERE id = ?",
-                (fresh, now, episode_id),
-            )
-            # 候选表也同步，便于人工核对来源链接。
-            conn.execute(
-                "UPDATE discovery_candidate SET enclosure = ?, updated_at = ? WHERE episode_id = ?",
-                (fresh, now, episode_id),
-            )
-            conn.commit()
+            # 两条 UPDATE 必须在同一事务内：半截写入会让 episode 与候选表链接不一致。
+            with conn:
+                conn.execute(
+                    "UPDATE episode SET enclosure = ?, updated_at = ? WHERE id = ?",
+                    (fresh, now, episode_id),
+                )
+                conn.execute(
+                    "UPDATE discovery_candidate SET enclosure = ?, updated_at = ? "
+                    "WHERE episode_id = ?",
+                    (fresh, now, episode_id),
+                )
         except sqlite3.Error as exc:
-            conn.rollback()
             raise EnclosureError(f"刷新链接落库失败: {exc}") from exc
     return fresh

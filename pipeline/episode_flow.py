@@ -121,6 +121,7 @@ def download_episode(
                 "warning": result["warning"],
             }
         except (httpx.HTTPError, OSError) as exc:
+            # InvalidAudioPayload 继承 OSError：200+HTML 错误页走同一重试与失败路径。
             last_error = exc
             # 签名直链过期（403/404/410）：从 feed 重新取链接后立即重试一次，
             # 而不是拿旧链接把 3 次重试耗光。
