@@ -7,6 +7,9 @@
 - HTTP 4xx：明确抛 HTTPStatusError
 - 签名直链过期（403/404/410）：从 feed 刷新 enclosure 后重试成功，新链接落库
 - 500 等非过期错误不刷新链接，避免掩盖真实故障
+- 200 + HTML/XML 错误页与 0 字节响应按无效音频拒绝，episode 置 failed
+- MIME 标成 octet-stream 时刷新侧与发现侧同样回退取首个链接
+- Atom 方言（link rel=enclosure）走真实解析
 """
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -356,7 +359,7 @@ def test_is_stale_link_uses_real_raise_for_status():
 # ---- 200 + HTML 错误体 / Atom feed ----
 
 
-def test_html_error_page_is_treated_as_invalid_audio(tmp_path):
+def test_html_error_page_is_treated_as_invalid_audio(tmp_path, monkeypatch):
     """托管方返回 200 + HTML 错误页时按下载失败处理，不落成品文件。"""
     from pipeline import download
 
@@ -368,16 +371,15 @@ def test_html_error_page_is_treated_as_invalid_audio(tmp_path):
         )
 
     dest = tmp_path / "a.mp3"
-    with httpx.Client(transport=httpx.MockTransport(handler)) as _client:
-        pass  # 保持与生产一致：内部自建 Client
     import pipeline.download as module
+
     original = httpx.Client
-    try:
-        module.httpx.Client = lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs)
-        with pytest.raises(download.InvalidAudioPayload) as error:
-            download.download("https://cdn.example.com/a.mp3", dest, trust_env=False)
-    finally:
-        module.httpx.Client = original
+    monkeypatch.setattr(
+        module.httpx, "Client",
+        lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    with pytest.raises(download.InvalidAudioPayload) as error:
+        download.download("https://cdn.example.com/a.mp3", dest, trust_env=False)
     message = str(error.value)
     assert "不是音频" in message and "content_type=audio/mpeg" in message
     assert not dest.exists()
@@ -411,3 +413,62 @@ def test_atom_feed_enclosure_is_resolved():
         "https://feeds.example.com/atom.xml", "atom-ep-1", transport=transport, trust_env=False
     )
     assert url == "https://cdn.example.com/atom.mp3"
+
+
+def test_empty_body_is_rejected(tmp_path, monkeypatch):
+    """200 + 0 字节：同样按无效音频拒绝，避免把空文件送进付费转写。"""
+    from pipeline import download
+    import pipeline.download as module
+
+    original = httpx.Client
+    monkeypatch.setattr(
+        module.httpx, "Client",
+        lambda **kwargs: original(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, content=b"")),
+            **kwargs,
+        ),
+    )
+    with pytest.raises(download.InvalidAudioPayload, match="内容为空"):
+        download.download("https://cdn.example.com/empty.mp3", tmp_path / "e.mp3", trust_env=False)
+
+
+def test_invalid_audio_payload_is_oserror():
+    """episode_flow 依赖它落在 (httpx.HTTPError, OSError) 捕获集合里。"""
+    from pipeline.download import InvalidAudioPayload
+
+    assert issubclass(InvalidAudioPayload, OSError)
+
+
+def test_octet_stream_enclosure_falls_back_to_first_href():
+    """托管方把 MIME 标成 octet-stream 时，刷新侧与发现侧同样回退取首个链接。"""
+    from pipeline import download_refresh
+
+    rss = b"""<?xml version="1.0"?>
+<rss version="2.0"><channel><title>t</title>
+<item><guid>ep-octet</guid><title>Octet</title>
+<enclosure url="https://cdn.example.com/octet.mp3" type="application/octet-stream"/></item>
+</channel></rss>"""
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=rss))
+    url = download_refresh.fetch_fresh_enclosure(
+        "https://feeds.example.com/show.xml", "ep-octet", transport=transport, trust_env=False
+    )
+    assert url == "https://cdn.example.com/octet.mp3"
+
+
+def test_download_marks_episode_failed_on_invalid_payload(conn, tmp_path, monkeypatch):
+    """200+HTML：episode 必须被置 failed（而不是崩出 CLI），且不写成品文件。"""
+    from pipeline import download, episode_flow
+    from state import episode
+
+    episode_id = episode.create(
+        conn, guid="ep-html", feed="https://feeds.example.com/show.xml",
+        enclosure="https://cdn.example.com/html.mp3",
+    )
+
+    def fake_download(url, dest, **kwargs):
+        raise download.InvalidAudioPayload("响应内容不是音频: head=b'<html>'")
+
+    monkeypatch.setattr(download, "download", fake_download)
+    with pytest.raises(episode_flow.EpisodeFlowError):
+        episode_flow.download_episode(conn, episode_id, workspace=tmp_path, sleep=lambda _s: None)
+    assert episode.get(conn, episode_id)["status"] == "failed"

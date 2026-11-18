@@ -3,6 +3,10 @@
 固化语义：dest 已存在时重新下载到临时文件对比 hash——
 一致则丢弃临时返回现有；不一致则告警并保留首版（动态广告插入场景）。
 后续步骤只读首次固化版本。
+
+内容校验：返回 200 但响应体是 HTML/XML 错误页（含 0 字节）时抛
+`InvalidAudioPayload`（OSError 子类），按下载失败处理，避免把错误页
+当成音频交给后续付费转写。
 """
 import hashlib
 import logging
@@ -72,6 +76,11 @@ def download(url: str, dest: Path, *, timeout: float = 120.0, trust_env: bool = 
                         if len(head) < SNIFF_BYTES:
                             head += chunk[: SNIFF_BYTES - len(head)]
                         f.write(chunk)
+                if not head:
+                    raise InvalidAudioPayload(
+                        "响应内容为空，不是音频: "
+                        f"content_type={resp.headers.get('content-type', '<none>')}"
+                    )
                 if _looks_like_markup(head):
                     # 200 + HTML/XML 错误体：当作下载失败，交给既有重试与清理逻辑。
                     raise InvalidAudioPayload(

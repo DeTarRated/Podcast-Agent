@@ -46,12 +46,11 @@ def _register_download(conn, episode_id: int, path: Path, sha256: str) -> int:
 
 
 def _error_summary(exc) -> str:
-    """错误摘要：保留状态码，去掉可能带签名的完整 URL。"""
+    """错误摘要：保留状态码，截掉可能带签名的完整 URL。"""
     text = str(exc)
-    for marker in ("for url '", "for url \""):
-        index = text.find(marker)
-        if index >= 0:
-            text = text[:index] + marker[0:0]
+    cut = text.find(" for url ")
+    if cut >= 0:
+        text = text[:cut]
     return text[:300]
 
 
@@ -135,7 +134,7 @@ def download_episode(
                 except (download_refresh.EnclosureError, OSError) as refresh_exc:
                     # 刷新失败原因必须保留：否则最终报错只剩下载 404，无法判断是
                     # 链接过期还是 feed 侧下架/网络故障。
-                    refresh_failure = str(refresh_exc)
+                    refresh_failure = _error_summary(refresh_exc)
                     last_error = f"{_error_summary(exc)}; 刷新链接失败: {refresh_failure}"
                 else:
                     # 只有刷新真正成功才置位：否则一次 feed 抖动会让本轮彻底放弃刷新。
