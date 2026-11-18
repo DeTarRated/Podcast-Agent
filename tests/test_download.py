@@ -5,6 +5,8 @@
 - 同内容重复下载：复用现有文件，无告警
 - 动态广告插入（hash 漂移）：告警并保留首版，临时文件清理
 - HTTP 4xx：明确抛 HTTPStatusError
+- 签名直链过期（403/404/410）：从 feed 刷新 enclosure 后重试成功，新链接落库
+- 500 等非过期错误不刷新链接，避免掩盖真实故障
 """
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,6 +16,7 @@ import httpx
 import pytest
 
 from pipeline import download
+from state import episode
 
 # 最小合法 MPEG-1 Layer III 静音帧（128kbps / 44.1kHz / stereo，417 字节）
 _SILENT_FRAME = bytes([0xFF, 0xFB, 0x90, 0x00]) + b"\x00" * 413
@@ -118,3 +121,131 @@ def test_cli_end_to_end(http_source, tmp_path):
     assert info["size"] == len(silent_mp3(20))
     assert info["warning"] is None
     assert dest.exists()
+
+
+# ---- 签名直链过期：从 feed 刷新 enclosure ----
+
+
+@pytest.fixture()
+def conn(tmp_path):
+    from state import db
+
+    connection = db.connect(tmp_path / "episodes.db")
+    db.init_schema(connection)
+    yield connection
+    connection.close()
+
+RSS_ONE = """<?xml version="1.0"?>
+<rss version="2.0"><channel><title>t</title>
+<item><guid>ep-stale</guid><title>Stale</title>
+<enclosure url="https://cdn.example.com/fresh.mp3" type="audio/mpeg"/></item>
+</channel></rss>"""
+
+
+def test_fetch_fresh_enclosure_from_feed():
+    from pipeline import download_refresh
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=RSS_ONE.encode()))
+    url = download_refresh.fetch_fresh_enclosure(
+        "https://feeds.example.com/show.xml", "ep-stale", transport=transport, trust_env=False
+    )
+    assert url == "https://cdn.example.com/fresh.mp3"
+
+
+def test_fetch_fresh_enclosure_missing_guid_fails():
+    from pipeline import download_refresh
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=RSS_ONE.encode()))
+    with pytest.raises(download_refresh.EnclosureError, match="找不到该 guid"):
+        download_refresh.fetch_fresh_enclosure(
+            "https://feeds.example.com/show.xml", "other", transport=transport, trust_env=False
+        )
+
+
+def test_fetch_fresh_enclosure_http_error_fails():
+    from pipeline import download_refresh
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(500))
+    with pytest.raises(download_refresh.EnclosureError, match="HTTP 500"):
+        download_refresh.fetch_fresh_enclosure(
+            "https://feeds.example.com/show.xml", "ep-stale", transport=transport, trust_env=False
+        )
+
+
+def test_is_stale_link_statuses():
+    from pipeline import download_refresh
+
+    def error_with(status):
+        request = httpx.Request("GET", "https://cdn.example.com/a.mp3")
+        return httpx.HTTPStatusError("boom", request=request, response=httpx.Response(status))
+
+    assert download_refresh.is_stale_link(error_with(404)) is True
+    assert download_refresh.is_stale_link(error_with(403)) is True
+    assert download_refresh.is_stale_link(error_with(410)) is True
+    assert download_refresh.is_stale_link(error_with(500)) is False
+    assert download_refresh.is_stale_link(RuntimeError("x")) is False
+
+
+def test_download_refreshes_expired_link_and_succeeds(conn, tmp_path, monkeypatch):
+    """404 → 刷新 enclosure → 用新链接下载成功，且新链接落库。"""
+    from pipeline import download, download_refresh, episode_flow
+    from state import episode
+
+    episode_id = episode.create(conn, guid="ep-stale", feed="https://feeds.example.com/show.xml")
+    conn.execute(
+        "UPDATE episode SET status='downloaded', enclosure=? WHERE id=?",
+        ("https://cdn.example.com/expired.mp3", episode_id),
+    )
+    conn.commit()
+
+    calls = []
+
+    def fake_download(url, dest, **kwargs):
+        calls.append(url)
+        if url.endswith("expired.mp3"):
+            request = httpx.Request("GET", url)
+            raise httpx.HTTPStatusError(
+                "404", request=request, response=httpx.Response(404, request=request)
+            )
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        Path(dest).write_bytes(b"audio-bytes")
+        return {"path": str(dest), "sha256": "deadbeef", "size": 11,
+                "duration_secs": 12.5, "warning": None}
+
+    monkeypatch.setattr(download, "download", fake_download)
+    monkeypatch.setattr(
+        download_refresh, "fetch_fresh_enclosure",
+        lambda *a, **k: "https://cdn.example.com/fresh.mp3",
+    )
+    result = episode_flow.download_episode(conn, episode_id, workspace=tmp_path, sleep=lambda _s: None)
+    assert result["status"] == "success"
+    assert calls == ["https://cdn.example.com/expired.mp3", "https://cdn.example.com/fresh.mp3"]
+    row = episode.get(conn, episode_id)
+    assert row["enclosure"] == "https://cdn.example.com/fresh.mp3"
+
+
+def test_download_does_not_refresh_on_server_error(conn, tmp_path, monkeypatch):
+    """500 不是链接过期：刷新链接会掩盖真实故障，应保持原样失败。"""
+    from pipeline import download, download_refresh, episode_flow
+    from state import episode
+
+    episode_id = episode.create(conn, guid="ep-500", feed="https://feeds.example.com/show.xml")
+    conn.execute(
+        "UPDATE episode SET status='downloaded', enclosure=? WHERE id=?",
+        ("https://cdn.example.com/boom.mp3", episode_id),
+    )
+    conn.commit()
+    refreshed = []
+    monkeypatch.setattr(
+        download_refresh, "fetch_fresh_enclosure",
+        lambda *a, **k: refreshed.append(1) or "https://cdn.example.com/fresh.mp3",
+    )
+
+    def fake_download(url, dest, **kwargs):
+        request = httpx.Request("GET", url)
+        raise httpx.HTTPStatusError("500", request=request, response=httpx.Response(500, request=request))
+
+    monkeypatch.setattr(download, "download", fake_download)
+    with pytest.raises(episode_flow.EpisodeFlowError, match="音频下载失败"):
+        episode_flow.download_episode(conn, episode_id, workspace=tmp_path, sleep=lambda _s: None)
+    assert refreshed == []

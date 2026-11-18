@@ -12,7 +12,7 @@ from typing import Optional
 
 import httpx
 
-from pipeline import download
+from pipeline import download, download_refresh
 from pipeline import cost_guard
 from state import db, episode, estimate, execution, manifest
 
@@ -81,6 +81,7 @@ def download_episode(
             }
 
     last_error = None
+    refreshed = False
     for attempt in range(1, max_attempts + 1):
         try:
             result = download.download(ep["enclosure"], audio, trust_env=trust_env)
@@ -103,6 +104,22 @@ def download_episode(
             }
         except (httpx.HTTPError, OSError) as exc:
             last_error = exc
+            # 签名直链过期（403/404/410）：从 feed 重新取链接后立即重试一次，
+            # 而不是拿旧链接把 3 次重试耗光。
+            if not refreshed and download_refresh.is_stale_link(exc):
+                refreshed = True
+                try:
+                    fresh = download_refresh.refresh_episode_enclosure(
+                        conn, episode_id,
+                        guid=ep["guid"], feed_url=ep["feed"],
+                        current=ep["enclosure"], trust_env=trust_env,
+                    )
+                except download_refresh.EnclosureError as refresh_exc:
+                    last_error = f"{exc}; 刷新链接失败: {refresh_exc}"
+                else:
+                    ep = dict(ep)
+                    ep["enclosure"] = fresh
+                    continue
             if attempt < max_attempts:
                 sleep(0.2 * (2 ** (attempt - 1)))
     episode.update_status(conn, episode_id, "failed")
