@@ -249,3 +249,108 @@ def test_download_does_not_refresh_on_server_error(conn, tmp_path, monkeypatch):
     with pytest.raises(episode_flow.EpisodeFlowError, match="音频下载失败"):
         episode_flow.download_episode(conn, episode_id, workspace=tmp_path, sleep=lambda _s: None)
     assert refreshed == []
+
+
+def test_refresh_failure_reason_is_preserved_in_final_error(conn, tmp_path, monkeypatch):
+    """刷新链接失败时，最终错误必须保留刷新原因，而不是只剩下载 404。"""
+    from pipeline import download, download_refresh, episode_flow
+    from state import episode
+
+    episode_id = episode.create(conn, guid="ep-refresh-fail", feed="https://feeds.example.com/show.xml")
+    conn.execute("UPDATE episode SET enclosure='https://cdn.example.com/expired.mp3' WHERE id=?", (episode_id,))
+    conn.commit()
+    monkeypatch.setattr(
+        download_refresh, "fetch_fresh_enclosure",
+        lambda *a, **k: (_ for _ in ()).throw(download_refresh.EnclosureError("feed 中已找不到该 guid")),
+    )
+
+    def fake_download(url, dest, **kwargs):
+        request = httpx.Request("GET", url)
+        raise httpx.HTTPStatusError("404", request=request, response=httpx.Response(404, request=request))
+
+    monkeypatch.setattr(download, "download", fake_download)
+    with pytest.raises(episode_flow.EpisodeFlowError) as error:
+        episode_flow.download_episode(conn, episode_id, workspace=tmp_path, sleep=lambda _s: None)
+    message = str(error.value)
+    assert "刷新链接失败" in message and "找不到该 guid" in message
+
+
+def test_refresh_attempts_again_after_transient_feed_failure(conn, tmp_path, monkeypatch):
+    """feed 抖动一次不应让本轮彻底放弃刷新：后续重试仍会再刷新一次。"""
+    from pipeline import download, download_refresh, episode_flow
+    from state import episode
+
+    episode_id = episode.create(conn, guid="ep-flaky-feed", feed="https://feeds.example.com/show.xml")
+    attempts = {"refresh": 0, "download": 0}
+
+    def flaky_refresh(*args, **kwargs):
+        attempts["refresh"] += 1
+        if attempts["refresh"] == 1:
+            raise download_refresh.EnclosureError("刷新 feed 失败: timeout")
+        return "https://cdn.example.com/fresh.mp3"
+
+    monkeypatch.setattr(download_refresh, "fetch_fresh_enclosure", flaky_refresh)
+
+    def fake_download(url, dest, **kwargs):
+        attempts["download"] += 1
+        if url.endswith("expired.mp3"):
+            request = httpx.Request("GET", url)
+            raise httpx.HTTPStatusError("404", request=request, response=httpx.Response(404, request=request))
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        Path(dest).write_bytes(b"audio")
+        return {"path": str(dest), "sha256": "aa", "size": 5, "duration_secs": 1.0, "warning": None}
+
+    monkeypatch.setattr(download, "download", fake_download)
+    conn.execute("UPDATE episode SET enclosure='https://cdn.example.com/expired.mp3' WHERE id=?", (episode_id,))
+    conn.commit()
+    result = episode_flow.download_episode(conn, episode_id, workspace=tmp_path, sleep=lambda _s: None)
+    assert result["status"] == "success"
+    assert attempts["refresh"] >= 2  # 第一次失败后仍会在后续重试再刷新
+
+
+def test_refresh_updates_candidate_enclosure(conn, tmp_path, monkeypatch):
+    """刷新成功后候选表也同步新链接，便于人工核对来源。"""
+    from pipeline import download, download_refresh, episode_flow
+    from state import episode
+
+    from state import feed as feed_state
+
+    feed_id = feed_state.add(
+        conn, name="F", feed_url="https://feeds.example.com/show.xml", show_name="S",
+        now="2026-01-01T00:00:00+00:00", process_existing=True,
+    )
+    episode_id = episode.create(conn, guid="ep-cand", feed="https://feeds.example.com/show.xml")
+    conn.execute(
+        "INSERT INTO discovery_candidate (feed_id, guid, title, enclosure, updated_at, episode_id, status) "
+        "VALUES (?, 'ep-cand', 't', 'https://cdn.example.com/old.mp3', '2026-01-01T00:00:00+00:00', ?, 'enqueued')",
+        (feed_id, episode_id),
+    )
+    conn.execute("UPDATE episode SET enclosure='https://cdn.example.com/old.mp3' WHERE id=?", (episode_id,))
+    conn.commit()
+    monkeypatch.setattr(
+        download_refresh, "fetch_fresh_enclosure", lambda *a, **k: "https://cdn.example.com/new.mp3"
+    )
+
+    def fake_download(url, dest, **kwargs):
+        if url.endswith("old.mp3"):
+            request = httpx.Request("GET", url)
+            raise httpx.HTTPStatusError("404", request=request, response=httpx.Response(404, request=request))
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        Path(dest).write_bytes(b"audio")
+        return {"path": str(dest), "sha256": "bb", "size": 5, "duration_secs": 1.0, "warning": None}
+
+    monkeypatch.setattr(download, "download", fake_download)
+    episode_flow.download_episode(conn, episode_id, workspace=tmp_path, sleep=lambda _s: None)
+    row = conn.execute("SELECT enclosure FROM discovery_candidate WHERE episode_id = ?", (episode_id,)).fetchone()
+    assert row["enclosure"] == "https://cdn.example.com/new.mp3"
+
+
+def test_is_stale_link_uses_real_raise_for_status():
+    """真实 raise_for_status 抛出的异常必须被识别为过期链接。"""
+    from pipeline import download_refresh
+
+    request = httpx.Request("GET", "https://cdn.example.com/a.mp3")
+    response = httpx.Response(404, request=request)
+    with pytest.raises(httpx.HTTPStatusError) as error:
+        response.raise_for_status()
+    assert download_refresh.is_stale_link(error.value) is True

@@ -27,11 +27,15 @@ def is_stale_link(error: BaseException) -> bool:
 
 
 def _entry_enclosure(entry) -> Optional[str]:
-    for item in entry.get("enclosures") or []:
+    """与发现层一致：优先 audio/*，否则回退第一个可用链接（托管方常标错 MIME）。"""
+    enclosures = entry.get("enclosures") or []
+    for item in enclosures:
         href = item.get("href") or item.get("url")
-        if not href:
-            continue
-        if (item.get("type") or "audio/mpeg").startswith("audio/"):
+        if href and (item.get("type") or "audio/mpeg").startswith("audio/"):
+            return href
+    for item in enclosures:
+        href = item.get("href") or item.get("url")
+        if href:
             return href
     return None
 
@@ -83,15 +87,21 @@ def refresh_episode_enclosure(
         feed_url, guid, transport=transport, trust_env=trust_env
     )
     if fresh != current:
-        conn.execute(
-            "UPDATE episode SET enclosure = ?, updated_at = datetime('now') WHERE id = ?",
-            (fresh, episode_id),
-        )
-        # 候选表也同步，便于人工核对来源链接。
-        conn.execute(
-            "UPDATE discovery_candidate SET enclosure = ?, updated_at = datetime('now') "
-            "WHERE episode_id = ?",
-            (fresh, episode_id),
-        )
-        conn.commit()
+        from state.episode import utcnow_iso
+
+        now = utcnow_iso()
+        try:
+            conn.execute(
+                "UPDATE episode SET enclosure = ?, updated_at = ? WHERE id = ?",
+                (fresh, now, episode_id),
+            )
+            # 候选表也同步，便于人工核对来源链接。
+            conn.execute(
+                "UPDATE discovery_candidate SET enclosure = ?, updated_at = ? WHERE episode_id = ?",
+                (fresh, now, episode_id),
+            )
+            conn.commit()
+        except sqlite3.Error as exc:
+            conn.rollback()
+            raise EnclosureError(f"刷新链接落库失败: {exc}") from exc
     return fresh

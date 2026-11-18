@@ -5,6 +5,7 @@
 | 模块 | 状态 | 职责 |
 | --- | --- | --- |
 | `download.py` | 完成 | 跟随重定向下载、sha256 固化、时长读取、首版保护（hash 漂移告警） |
+| `download_refresh.py` | 完成 | 签名直链（Acast 等）过期时从 feed 重取同一 guid 的 enclosure 并落库；仅 403/404/410 触发，其余错误原样失败 |
 | `wordrender.py` | 完成 | Scribe 词级 JSON → 一句一条英文 SRT（`[S01] ` 前缀）+ provenance sidecar |
 | `scribe.py` | 完成 | Scribe v2 客户端（直接 HTTP）：本地幂等键 call_ref + transcription_id 锚定恢复；付费 POST 绝不自动重试，超时/断连记 unknown 转人工对账 |
 | `orchestrate.py` | 完成 | translate-srt 确定性步骤编排（prepare / fix / fix --manual-done / apply / finalize），主代理驱动；不直接调模型，翻译/复核/调研经 Runner dispatch |

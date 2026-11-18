@@ -45,6 +45,23 @@ def _register_download(conn, episode_id: int, path: Path, sha256: str) -> int:
     return artifact_id
 
 
+def _error_summary(exc) -> str:
+    """错误摘要：保留状态码，去掉可能带签名的完整 URL。"""
+    text = str(exc)
+    for marker in ("for url '", "for url \""):
+        index = text.find(marker)
+        if index >= 0:
+            text = text[:index] + marker[0:0]
+    return text[:300]
+
+
+def _redact_url(url: str | None) -> str:
+    if not url:
+        return "<none>"
+    base = url.split("?", 1)[0]
+    return base[:120]
+
+
 def download_episode(
     conn,
     episode_id: int,
@@ -82,6 +99,7 @@ def download_episode(
 
     last_error = None
     refreshed = False
+    refreshed_url = None
     for attempt in range(1, max_attempts + 1):
         try:
             result = download.download(ep["enclosure"], audio, trust_env=trust_env)
@@ -107,23 +125,31 @@ def download_episode(
             # 签名直链过期（403/404/410）：从 feed 重新取链接后立即重试一次，
             # 而不是拿旧链接把 3 次重试耗光。
             if not refreshed and download_refresh.is_stale_link(exc):
-                refreshed = True
                 try:
                     fresh = download_refresh.refresh_episode_enclosure(
                         conn, episode_id,
                         guid=ep["guid"], feed_url=ep["feed"],
                         current=ep["enclosure"], trust_env=trust_env,
                     )
-                except download_refresh.EnclosureError as refresh_exc:
-                    last_error = f"{exc}; 刷新链接失败: {refresh_exc}"
+                except (download_refresh.EnclosureError, OSError) as refresh_exc:
+                    # 刷新失败原因必须保留：否则最终报错只剩下载 404，无法判断是
+                    # 链接过期还是 feed 侧下架/网络故障。
+                    refresh_failure = str(refresh_exc)
+                    last_error = f"{_error_summary(exc)}; 刷新链接失败: {refresh_failure}"
                 else:
+                    # 只有刷新真正成功才置位：否则一次 feed 抖动会让本轮彻底放弃刷新。
+                    refreshed = True
+                    refreshed_url = fresh
                     ep = dict(ep)
                     ep["enclosure"] = fresh
                     continue
             if attempt < max_attempts:
                 sleep(0.2 * (2 ** (attempt - 1)))
     episode.update_status(conn, episode_id, "failed")
-    raise EpisodeFlowError(f"音频下载失败，已重试 {max_attempts} 次: {last_error}")
+    detail = _error_summary(last_error)
+    if refreshed:
+        detail = f"{detail}; 已刷新链接={_redact_url(refreshed_url)}"
+    raise EpisodeFlowError(f"音频下载失败，已重试 {max_attempts} 次: {detail}")
 
 
 def episode_status(conn, episode_id: int) -> dict:
